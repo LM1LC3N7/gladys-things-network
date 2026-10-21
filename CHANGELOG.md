@@ -10,6 +10,8 @@ the notes of the version's GitHub Release.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-21
+
 ### Added
 
 - The LoRaWAN devices of a The Things Network / The Things Stack Cloud
@@ -35,4 +37,5 @@ the notes of the version's GitHub Release.
 - A "Test the application" button with the last values of each device, the
   ignored fields and the time of the next possible read.
 
-[Unreleased]: https://github.com/LM1LC3N7/gladys-things-network/commits/main
+[Unreleased]: https://github.com/LM1LC3N7/gladys-things-network/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/LM1LC3N7/gladys-things-network/releases/tag/v0.1.1
