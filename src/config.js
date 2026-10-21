@@ -1,45 +1,105 @@
 // -----------------------------------------------------------------------------
-// Integration configuration.
-//
-// The configuration is filled in by the user in Gladys, from the `config_schema`
-// declared in `gladys-assistant-integration.json`. The SDK fetches it for you
-// (`gladys.getConfig()`) and notifies you of every change through
-// `gladys.onConfigUpdated()`.
-//
-// This module only provides defaults and normalizes the received object, so the
-// rest of the code never has to deal with `undefined`.
+// The configuration the user fills (manifest `config_schema`), normalized so
+// the rest of the code never deals with strings or `undefined`.
 // -----------------------------------------------------------------------------
 
-// Defaults: they MUST stay consistent with the `default` values declared in the
-// `config_schema` of the manifest.
+import { CLUSTERS } from './constants.js';
+
+// Defaults: they MUST match the `default` values of the manifest
+// (test/manifest.test.js checks it).
 export const DEFAULT_CONFIG = {
-  latitude: 48.8566, // Paris
-  longitude: 2.3522,
-  unit: 'celsius', // 'celsius' | 'fahrenheit'
-  // Seconds between two reads of the polled sensors. Gladys polls at most once
-  // a minute: slower intervals are applied by skipping polls (see
-  // createPoller in src/devices/index.js).
-  poll_frequency: 300,
-  // Reserved key (NOT in config_schema): because the manifest declares both
-  // 'local' and 'cloud' in its `transports` field, Gladys shows a standard
-  // "Prefer the local connection" toggle and sends the user's choice here.
-  // Read-only for the integration; defaults to true.
-  GLADYS_PREFER_LOCAL: true,
+  server: 'eu1',
+  poll_interval: 5,
 };
 
+export const SERVERS = [...Object.keys(CLUSTERS), 'custom'];
+
+const number = (value, fallback, min, max) => {
+  const n = Number(value);
+  return value !== '' && value !== null && value !== undefined && Number.isFinite(n)
+    ? Math.min(max, Math.max(min, Math.round(n)))
+    : fallback;
+};
+
+const clean = (value) => (typeof value === 'string' ? value.trim() : '');
+
+const LABEL = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+
 /**
- * Merge the user config with the defaults.
- * @param {Record<string, unknown>} raw config returned by the SDK
+ * The host of a The Things Stack server as the user may type it: a host name
+ * with at least one dot and an optional port. A leading `https://` and a
+ * trailing `/` are tolerated; `http://`, a path, credentials or an IP address
+ * are refused (the API key is only ever sent over HTTPS to a named host).
+ * Returns `host[:port]` in lower case, or null.
+ */
+export function parseHost(text) {
+  let value = clean(text)
+    .replace(/^https:\/\//i, '')
+    .replace(/\/+$/, '')
+    .toLowerCase();
+  if (!value || value.length > 253) {
+    return null;
+  }
+  let port = '';
+  const colon = value.lastIndexOf(':');
+  if (colon !== -1) {
+    const digits = value.slice(colon + 1);
+    value = value.slice(0, colon);
+    const n = Number(digits);
+    if (!/^\d{1,5}$/.test(digits) || n < 1 || n > 65535) {
+      return null;
+    }
+    port = n === 443 ? '' : `:${n}`;
+  }
+  const labels = value.split('.');
+  if (labels.length < 2 || !labels.every((label) => LABEL.test(label))) {
+    return null;
+  }
+  if (/^\d+$/.test(labels[labels.length - 1])) {
+    return null; // an IPv4 address
+  }
+  return `${value}${port}`;
+}
+
+/** An application id of The Things Stack: 3 to 36 of a-z, 0-9 and single dashes. */
+export const APPLICATION_ID = /^[a-z0-9](?:-?[a-z0-9]){2,35}$/;
+
+/** An API key (`NNSXS.<id>.<secret>`): only characters a header may carry. */
+const API_KEY = /^[A-Za-z0-9._-]{16,512}$/;
+
+/**
+ * The configuration, normalized. `problems` names what is missing or not
+ * understood (never the content of the key).
  */
 export function normalizeConfig(raw = {}) {
+  const problems = [];
+  const server = SERVERS.includes(raw.server) ? raw.server : DEFAULT_CONFIG.server;
+  let host = CLUSTERS[server] ?? null;
+  if (server === 'custom') {
+    host = parseHost(raw.custom_host);
+    if (!host) {
+      problems.push(clean(raw.custom_host) ? 'host' : 'hostMissing');
+    }
+  }
+  const applicationId = clean(raw.application_id).toLowerCase();
+  if (!applicationId) {
+    problems.push('applicationMissing');
+  } else if (!APPLICATION_ID.test(applicationId)) {
+    problems.push('application');
+  }
+  const apiKey = clean(raw.api_key);
+  if (!apiKey) {
+    problems.push('keyMissing');
+  } else if (!API_KEY.test(apiKey)) {
+    problems.push('key');
+  }
   return {
-    ...DEFAULT_CONFIG,
-    ...raw,
-    // Force the types: config may arrive as strings from a form.
-    latitude: Number(raw.latitude ?? DEFAULT_CONFIG.latitude),
-    longitude: Number(raw.longitude ?? DEFAULT_CONFIG.longitude),
-    poll_frequency: Number(raw.poll_frequency ?? DEFAULT_CONFIG.poll_frequency),
-    // The preference is a boolean; anything but an explicit false means true.
-    GLADYS_PREFER_LOCAL: raw.GLADYS_PREFER_LOCAL !== false,
+    server,
+    host,
+    applicationId,
+    apiKey,
+    problems,
+    ready: problems.length === 0,
+    pollMinutes: number(raw.poll_interval, DEFAULT_CONFIG.poll_interval, 2, 60),
   };
 }

@@ -1,33 +1,50 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeConfig, DEFAULT_CONFIG } from '../src/config.js';
+import { DEFAULT_CONFIG, normalizeConfig, parseHost } from '../src/config.js';
 
-test('normalizeConfig returns the defaults when called with no argument', () => {
-  assert.deepEqual(normalizeConfig(), DEFAULT_CONFIG);
+test('defaults: the eu1 cluster, 5 minutes, nothing ready without an application and a key', () => {
+  const config = normalizeConfig();
+  assert.equal(config.server, DEFAULT_CONFIG.server);
+  assert.equal(config.host, 'eu1.cloud.thethings.network');
+  assert.equal(config.pollMinutes, 5);
+  assert.equal(config.ready, false);
+  assert.deepEqual(config.problems, ['applicationMissing', 'keyMissing']);
 });
 
-test('normalizeConfig keeps user values over the defaults', () => {
-  const config = normalizeConfig({ latitude: 45.5, longitude: -73.6, unit: 'fahrenheit' });
-  assert.equal(config.latitude, 45.5);
-  assert.equal(config.longitude, -73.6);
-  assert.equal(config.unit, 'fahrenheit');
+test('the interval is bounded (2 to 60 minutes); "" or null keep the default', () => {
+  const base = { application_id: 'my-app', api_key: 'NNSXS.ABCDEFGHIJKLMNOP' };
+  assert.equal(normalizeConfig({ ...base, poll_interval: 1 }).pollMinutes, 2);
+  assert.equal(normalizeConfig({ ...base, poll_interval: 600 }).pollMinutes, 60);
+  assert.equal(normalizeConfig({ ...base, poll_interval: '' }).pollMinutes, 5);
+  assert.equal(normalizeConfig({ ...base, poll_interval: null }).pollMinutes, 5);
+  assert.equal(normalizeConfig({ ...base, server: 'nam1' }).host, 'nam1.cloud.thethings.network');
+  assert.equal(normalizeConfig({ ...base, server: 'mars' }).server, 'eu1');
+  assert.equal(normalizeConfig({ ...base, application_id: ' My-App ' }).applicationId, 'my-app');
+  assert.equal(normalizeConfig(base).ready, true);
 });
 
-test('normalizeConfig coerces numeric strings coming from a form', () => {
-  const config = normalizeConfig({ latitude: '48.8', longitude: '2.3', poll_frequency: '600' });
-  assert.equal(config.latitude, 48.8);
-  assert.equal(config.longitude, 2.3);
-  assert.equal(config.poll_frequency, 600);
-  assert.equal(typeof config.poll_frequency, 'number');
+test('an API key with characters a header cannot carry is refused', () => {
+  const config = normalizeConfig({ application_id: 'my-app', api_key: 'NNSXS.ABC\r\nX-Evil: 1' });
+  assert.deepEqual(config.problems, ['key']);
 });
 
-test('normalizeConfig falls back to the default for a missing numeric field', () => {
-  const config = normalizeConfig({ unit: 'celsius' });
-  assert.equal(config.poll_frequency, DEFAULT_CONFIG.poll_frequency);
-});
-
-test('GLADYS_PREFER_LOCAL defaults to true and only an explicit false disables it', () => {
-  assert.equal(normalizeConfig().GLADYS_PREFER_LOCAL, true);
-  assert.equal(normalizeConfig({ GLADYS_PREFER_LOCAL: true }).GLADYS_PREFER_LOCAL, true);
-  assert.equal(normalizeConfig({ GLADYS_PREFER_LOCAL: false }).GLADYS_PREFER_LOCAL, false);
+test('a custom host: HTTPS host names only', () => {
+  assert.equal(
+    parseHost('https://mytenant.eu1.cloud.thethings.industries/'),
+    'mytenant.eu1.cloud.thethings.industries',
+  );
+  assert.equal(parseHost('lns.example.org:8443'), 'lns.example.org:8443');
+  assert.equal(parseHost('lns.example.org:443'), 'lns.example.org');
+  assert.equal(parseHost('http://lns.example.org'), null);
+  assert.equal(parseHost('192.168.1.10'), null);
+  assert.equal(parseHost('localhost'), null);
+  assert.equal(parseHost('user@lns.example.org'), null);
+  assert.equal(parseHost('lns.example.org/path'), null);
+  assert.equal(parseHost('lns.example.org:99999'), null);
+  const config = normalizeConfig({
+    server: 'custom',
+    application_id: 'my-app',
+    api_key: 'NNSXS.ABCDEFGHIJKLMNOP',
+  });
+  assert.deepEqual(config.problems, ['hostMissing']);
 });

@@ -1,8 +1,8 @@
 {
-  "name": "gladys-integration-template-js",
-  "version": "1.0.0",
+  "name": "gladys-things-network",
+  "version": "0.1.0",
   "private": true,
-  "description": "Official starter template to build an external integration for Gladys Assistant with the JavaScript SDK.",
+  "description": "The Things Network / The Things Stack for Gladys Assistant: the last decoded values of the LoRaWAN devices of an application, read through the official Storage API.",
   "type": "module",
   "main": "index.js",
   "scripts": {
@@ -10,10 +10,15 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "node --test"
+    "test": "node --test",
+    "audit": "npm audit --omit=dev"
   },
   "engines": {
     "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LM1LC3N7/gladys-things-network.git"
   },
   "dependencies": {
     "@gladysassistant/integration-sdk": "^0.15.0"

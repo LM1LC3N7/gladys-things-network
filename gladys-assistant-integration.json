@@ -1,177 +1,131 @@
 {
   "manifest_version": 1,
   "type": "device",
-  "name": "Demo Devices Template",
+  "name": "The Things Network",
   "description": {
-    "en": "Starter template showing sensors, a switch, a dimmable light and a smart plug.",
-    "fr": "Template de démarrage : capteurs, interrupteur, lampe variable et prise connectée."
+    "en": "Unofficial connector: your LoRaWAN sensors from The Things Network / The Things Stack.",
+    "fr": "Connecteur non officiel : vos capteurs LoRaWAN de The Things Network / The Things Stack."
   },
-  "version": "1.0.0",
-  "docker_image": "ghcr.io/gladysassistant/integration-template-js:1.0.0",
+  "version": "0.1.0",
+  "docker_image": "ghcr.io/lm1lc3n7/gladys-things-network:0.1.0",
   "gladys_version": ">=5.1.0",
-  "cover_image": "https://raw.githubusercontent.com/GladysAssistant/integration-template-js/master/cover.png",
-  "categories": ["lighting", "security", "environment"],
-  "transports": ["local", "cloud"],
+  "cover_image": "https://raw.githubusercontent.com/LM1LC3N7/gladys-things-network/main/cover.png",
+  "categories": ["environment"],
+  "transports": ["cloud"],
   "config_schema": [
     {
       "key": "intro",
       "type": "section",
-      "label": { "en": "Getting started", "fr": "Pour commencer" },
+      "label": { "en": "Your LoRaWAN application", "fr": "Votre application LoRaWAN" },
       "description": {
-        "en": "The demo weather station reads real data from the free Open-Meteo API: pick the coordinates to observe. No account, no API key.",
-        "fr": "La station météo de démonstration lit de vraies données via l'API gratuite Open-Meteo : choisissez les coordonnées à observer. Pas de compte, pas de clé d'API."
+        "en": "Unofficial connector, not affiliated with The Things Industries. It reads the last decoded values of the devices of one application through the official Storage API of The Things Stack (The Things Network community edition or The Things Stack Cloud): temperature, humidity, pressure, light, CO2, particulate matter, soil moisture, wind, UV, distance, battery, water leak and motion, when the payload formatter names them. Read only: nothing is ever sent to your devices. Before anything else, activate the Storage Integration of the application in the console (Integrations > Storage Integration), then create an API key with the \"Read application traffic\" right. Never tested with a real account yet.",
+        "fr": "Connecteur non officiel, sans lien avec The Things Industries. Il lit les dernières valeurs décodées des appareils d'une application par l'API Storage officielle de The Things Stack (The Things Network, édition communautaire, ou The Things Stack Cloud) : température, humidité, pression, luminosité, CO2, particules fines, humidité du sol, vent, UV, distance, batterie, fuite d'eau et mouvement, quand le décodeur (payload formatter) les nomme. Lecture seule : rien n'est jamais envoyé à vos appareils. Avant tout, activez l'intégration Storage de l'application dans la console (Integrations > Storage Integration), puis créez une clé API avec le droit « Read application traffic ». Jamais testé avec un vrai compte pour l'instant."
       },
       "links": [
         {
-          "url": "https://open-meteo.com/en/docs",
-          "label": { "en": "Open-Meteo documentation", "fr": "Documentation Open-Meteo" }
+          "url": "https://github.com/LM1LC3N7/gladys-things-network/blob/main/docs/fr.md",
+          "label": { "en": "Guide (French)", "fr": "Guide (français)" }
+        },
+        {
+          "url": "https://github.com/LM1LC3N7/gladys-things-network/blob/main/docs/en.md",
+          "label": { "en": "Guide (English)", "fr": "Guide (anglais)" }
+        },
+        {
+          "url": "https://www.thethingsindustries.com/docs/integrations/storage/",
+          "label": {
+            "en": "Storage Integration (The Things Stack)",
+            "fr": "Intégration Storage (The Things Stack)"
+          }
         }
       ]
     },
     {
-      "key": "latitude",
-      "type": "number",
-      "label": { "en": "Latitude", "fr": "Latitude" },
-      "description": {
-        "en": "Latitude used for the demo weather sensor.",
-        "fr": "Latitude utilisée par le capteur météo de démonstration."
-      },
-      "placeholder": { "en": "e.g. 48.8566", "fr": "ex. 48.8566" },
-      "required": true,
-      "default": 48.8566,
-      "min": -90,
-      "max": 90
-    },
-    {
-      "key": "longitude",
-      "type": "number",
-      "label": { "en": "Longitude", "fr": "Longitude" },
-      "description": {
-        "en": "Longitude used for the demo weather sensor.",
-        "fr": "Longitude utilisée par le capteur météo de démonstration."
-      },
-      "placeholder": { "en": "e.g. 2.3522", "fr": "ex. 2.3522" },
-      "required": true,
-      "default": 2.3522,
-      "min": -180,
-      "max": 180
-    },
-    {
-      "key": "unit",
+      "key": "server",
       "type": "select",
-      "label": { "en": "Temperature unit", "fr": "Unité de température" },
+      "label": { "en": "Cluster", "fr": "Cluster" },
+      "description": {
+        "en": "The cluster of your application, shown in the address of the console (eu1 for Europe).",
+        "fr": "Le cluster de votre application, visible dans l'adresse de la console (eu1 pour l'Europe)."
+      },
       "required": false,
-      "default": "celsius",
+      "default": "eu1",
       "options": [
-        { "value": "celsius", "label": { "en": "Celsius", "fr": "Celsius" } },
-        { "value": "fahrenheit", "label": { "en": "Fahrenheit", "fr": "Fahrenheit" } }
+        { "value": "eu1", "label": { "en": "Europe 1 (eu1)", "fr": "Europe 1 (eu1)" } },
+        {
+          "value": "nam1",
+          "label": { "en": "North America 1 (nam1)", "fr": "Amérique du Nord 1 (nam1)" }
+        },
+        { "value": "au1", "label": { "en": "Australia 1 (au1)", "fr": "Australie 1 (au1)" } },
+        {
+          "value": "custom",
+          "label": {
+            "en": "Other server (below)",
+            "fr": "Autre serveur (ci-dessous)"
+          }
+        }
       ]
     },
     {
-      "key": "poll_frequency",
-      "type": "number",
-      "label": { "en": "Refresh interval (s)", "fr": "Intervalle de rafraîchissement (s)" },
+      "key": "custom_host",
+      "type": "string",
+      "label": { "en": "Other server", "fr": "Autre serveur" },
       "description": {
-        "en": "How often sensors are polled, in seconds (one minute minimum).",
-        "fr": "Fréquence d'interrogation des capteurs, en secondes (une minute minimum)."
+        "en": "Only with \"Other server\": the host name of your The Things Stack (Cloud tenant or your own server), reached over HTTPS.",
+        "fr": "Seulement avec « Autre serveur » : le nom d'hôte de votre The Things Stack (tenant Cloud ou votre propre serveur), joint en HTTPS."
+      },
+      "placeholder": {
+        "en": "mytenant.eu1.cloud.thethings.industries",
+        "fr": "montenant.eu1.cloud.thethings.industries"
+      },
+      "required": false
+    },
+    {
+      "key": "application_id",
+      "type": "string",
+      "label": { "en": "Application ID", "fr": "ID de l'application" },
+      "description": {
+        "en": "The ID of the application in the console (lower case letters, digits and dashes).",
+        "fr": "L'ID de l'application dans la console (lettres minuscules, nombres et tirets)."
+      },
+      "placeholder": { "en": "my-sensors", "fr": "mes-capteurs" },
+      "required": false
+    },
+    {
+      "key": "api_key",
+      "type": "secret",
+      "label": { "en": "API key", "fr": "Clé API" },
+      "description": {
+        "en": "An API key of the application (it starts with NNSXS.) with the \"Read application traffic (uplink and downlink)\" right only. Kept by Gladys in its database, never shown again; sent only to the server above.",
+        "fr": "Une clé API de l'application (elle commence par NNSXS.) avec le seul droit « Read application traffic (uplink and downlink) ». Gardée par Gladys dans sa base, jamais réaffichée ; envoyée seulement au serveur ci-dessus."
+      },
+      "required": false
+    },
+    {
+      "key": "poll_interval",
+      "type": "number",
+      "label": {
+        "en": "Read interval (minutes)",
+        "fr": "Intervalle de lecture (minutes)"
+      },
+      "description": {
+        "en": "One request each time, for every device of the application. Nothing reads sooner, not even the test button or a restart. LoRaWAN sensors usually send every 5 to 60 minutes.",
+        "fr": "Une requête à chaque fois, pour tous les appareils de l'application. Rien ne lit plus tôt, ni le bouton de test ni un redémarrage. Les capteurs LoRaWAN émettent en général toutes les 5 à 60 minutes."
       },
       "required": false,
-      "default": 300,
-      "min": 60,
-      "max": 3600
+      "default": 5,
+      "min": 2,
+      "max": 60
     }
   ],
   "actions": [
     {
-      "key": "test_weather",
-      "label": { "en": "Test the weather provider", "fr": "Tester le fournisseur météo" },
-      "timeout_seconds": 30
-    },
-    {
-      "key": "identify",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ]
-    }
-  ],
-  "scene_triggers": [
-    {
-      "key": "motion_detected",
-      "label": { "en": "Motion detected", "fr": "Mouvement détecté" },
+      "key": "test_connection",
+      "timeout_seconds": 120,
+      "label": { "en": "Test the application", "fr": "Tester l'application" },
       "description": {
-        "en": "A demo motion sensor saw a person or an animal move.",
-        "fr": "Un détecteur de démonstration a vu bouger une personne ou un animal."
-      },
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Sensor", "fr": "Détecteur" }
-        },
-        {
-          "key": "target",
-          "type": "multi_select",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" },
-          "options": [
-            { "value": "person", "label": { "en": "Person", "fr": "Personne" } },
-            { "value": "animal", "label": { "en": "Animal", "fr": "Animal" } }
-          ]
-        }
-      ],
-      "variables": [
-        {
-          "key": "target",
-          "type": "string",
-          "label": { "en": "What moved", "fr": "Ce qui a bougé" }
-        }
-      ]
-    }
-  ],
-  "scene_actions": [
-    {
-      "key": "identify_device",
-      "label": { "en": "Identify a device", "fr": "Identifier un appareil" },
-      "description": {
-        "en": "Make a device signal itself (the demo light blinks).",
-        "fr": "Fait se signaler un appareil (la lampe de démonstration clignote)."
-      },
-      "timeout_seconds": 15,
-      "fields": [
-        {
-          "key": "device",
-          "type": "select",
-          "source": "devices",
-          "label": { "en": "Device", "fr": "Appareil" },
-          "required": true
-        }
-      ],
-      "outputs": [
-        {
-          "key": "signalled",
-          "type": "boolean",
-          "label": { "en": "Device signalled", "fr": "Appareil signalé" }
-        }
-      ]
-    }
-  ],
-  "widgets": [
-    {
-      "key": "demo_status",
-      "label": { "en": "Demo status", "fr": "État de la démo" },
-      "description": {
-        "en": "Live temperature and plug power, plug connection and observed location.",
-        "fr": "Température et puissance en direct, connexion de la prise, position observée."
-      },
-      "icon": "activity",
-      "action_timeout_seconds": 15
+        "en": "Reads the Storage API if the interval has passed (a refused key is tried again then) and shows the last values of each device, the fields ignored and when the next read can happen.",
+        "fr": "Lit l'API Storage si l'intervalle est écoulé (une clé refusée est alors réessayée) et affiche les dernières valeurs de chaque appareil, les champs ignorés et l'heure de la prochaine lecture possible."
+      }
     }
   ]
 }
