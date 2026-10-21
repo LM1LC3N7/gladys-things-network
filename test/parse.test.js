@@ -107,7 +107,21 @@ test('kinds: units of the core, bounds, no guess from the name when a unit is de
   assert.equal(valueOf('temperature', true), null);
   assert.equal(valueOf('temperature', 300), null);
   assert.equal(valueOf('leak', true), 1);
-  assert.equal(valueOf('leak', 2), null);
+  // I4: a count above 1 means detected; a negative or a fraction is not a state.
+  assert.equal(valueOf('leak', 2), 1);
+  assert.equal(valueOf('motion', 17), 1);
+  assert.equal(valueOf('motion', -1), null);
+  assert.equal(valueOf('motion', 0.5), null);
+  // I4: a bare pressure is an air pressure only within 850-1100 hPa (or Pa).
+  assert.equal(k('pressure'), 'pressure_air_only');
+  assert.equal(k('barometric_pressure'), 'pressure');
+  assert.equal(valueOf('pressure_air_only', 350), null);
+  assert.equal(valueOf('pressure_air_only', 101325), 1013.3);
+  assert.equal(valueOf('pressure_air_only', 700), null);
+  assert.equal(valueOf('pressure', 700), 700);
+  // M9: a whole battery of 0 to 5 may be a rounded voltage: left out.
+  assert.equal(valueOf('battery_whole', 3), null);
+  assert.equal(valueOf('battery_whole', 6), 6);
   assert.equal(valueOf('constructor', 1), null);
   assert.equal(k('temperature', { unit: '°F', deviceClass: 'temperature' }), undefined);
   assert.equal(k('temperature', { unit: '°C', deviceClass: 'temperature' }), 'temperature');

@@ -22,8 +22,12 @@ the notes of the version's GitHub Release.
   and voltage, distance, soil moisture, wind speed, UV index, water leak and
   motion, with the units of the Gladys core and bounded values. Every other
   field is ignored and named by the test button.
-- Each uplink is published once, dated when The Things Stack received it,
-  within a budget of 300 states per minute.
+- Each uplink is published once, oldest first, within a budget of 300 states
+  per minute: the newest value received since the previous read is published
+  live, so Gladys scenes run on it (for a water leak or a motion, every change
+  of that period, in order: a leak 0 -> 1 -> 0 is never lost); older uplinks
+  (catching up after a pause, 6 hours at most) are dated when The Things Stack
+  received them.
 - A read every 5 minutes by default, never faster (test button, reconnection
   and restart included); a refused key, a missing right or a missing Storage
   Integration stop the reads with a clear status; 429/5xx pause them. Both

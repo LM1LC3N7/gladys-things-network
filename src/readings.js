@@ -49,13 +49,30 @@ const decimal = (category, unit, min, max, digits = 1, convert) => ({
   convert: convert ?? within(min, max, digits),
 });
 
-/** true/false, or 0/1: 1 when detected. */
+/**
+ * true/false, or a whole number: 1 when detected. Some decoders give a count
+ * (Elsys: `motion` = PIR detections, `occupancy` 0/1/2): any count above 0
+ * means detected, never ignored (a stale 0 would say "nothing").
+ */
 const binaryValue = (value) => {
   if (typeof value === 'boolean') {
     return value ? 1 : 0;
   }
-  return value === 0 || value === 1 ? value : null;
+  const n = num(value);
+  return n !== null && Number.isInteger(n) && n >= 0 ? Math.min(n, 1) : null;
 };
+
+/** hPa (or Pa, by its range) within [min, 1100] hPa, or null. */
+function atmospheric(min) {
+  return (value) => {
+    const n = num(value);
+    if (n === null) {
+      return null;
+    }
+    const hpa = n >= min * 100 && n <= 110000 ? n / 100 : n;
+    return hpa >= min && hpa <= 1100 ? round(hpa, 1) : null;
+  };
+}
 
 const binary = (category) => ({
   category,
@@ -70,16 +87,20 @@ const binary = (category) => ({
 export const KINDS = {
   temperature: decimal(CAT.TEMPERATURE_SENSOR, UNITS.CELSIUS, -50, 125),
   humidity: decimal(CAT.HUMIDITY_SENSOR, UNITS.PERCENT, 0, 100),
-  // hPa (or mbar) as most decoders give it; Pa (SenseCAP, some decoders) is
-  // told apart by its range, the two never overlap.
-  pressure: decimal(CAT.PRESSURE_SENSOR, UNITS.HECTO_PASCAL, 300, 1100, 1, (value) => {
-    const n = num(value);
-    if (n === null) {
-      return null;
-    }
-    const hpa = n >= 30000 && n <= 110000 ? n / 100 : n;
-    return hpa >= 300 && hpa <= 1100 ? round(hpa, 1) : null;
-  }),
+  // An air pressure (barometric_pressure, air_pressure, baro...): hPa (or
+  // mbar) as most decoders give it; Pa (SenseCAP, some decoders) is told
+  // apart by its range, the two never overlap.
+  pressure: decimal(CAT.PRESSURE_SENSOR, UNITS.HECTO_PASCAL, 300, 1100, 1, atmospheric(300)),
+  // A bare `pressure` may be a water pressure (kPa, bar: pipe sensors): only
+  // a plausible air pressure at the ground is kept (850-1100 hPa or Pa).
+  pressure_air_only: decimal(
+    CAT.PRESSURE_SENSOR,
+    UNITS.HECTO_PASCAL,
+    850,
+    1100,
+    1,
+    atmospheric(850),
+  ),
   light: decimal(CAT.LIGHT_SENSOR, UNITS.LUX, 0, 200000, 0),
   co2: { ...decimal(CAT.CO2_SENSOR, UNITS.PPM, 0, 40000, 0), type: TYPES.SENSOR.INTEGER },
   pm25: decimal(CAT.PM25_SENSOR, UNITS.MICROGRAM_PER_CUBIC_METER, 0, 2000),
@@ -93,7 +114,8 @@ export const KINDS = {
     convert: within(0, 100, 0),
   },
   // A bare "battery" / "bat" field may be a voltage: only a whole number is
-  // read as a percentage (3.6 V is never shown as 3.6 %).
+  // read as a percentage (3.6 V is never shown as 3.6 %), and not 0 to 5 (a
+  // rounded voltage, 3 V, is never shown as 3 %).
   battery_whole: {
     category: CAT.BATTERY,
     type: TYPES.BATTERY.INTEGER,
@@ -102,7 +124,7 @@ export const KINDS = {
     max: 100,
     convert: (value) => {
       const n = num(value);
-      return n !== null && Number.isInteger(n) && n >= 0 && n <= 100 ? n : null;
+      return n !== null && Number.isInteger(n) && n > 5 && n <= 100 ? n : null;
     },
   },
   battery_voltage: {
@@ -158,7 +180,8 @@ const ALIASES = {
     'watertemperature',
   ],
   humidity: ['humidity', 'hum', 'humsht', 'humidityrh', 'relativehumidity', 'airhumidity', 'rh'],
-  pressure: ['pressure', 'barometricpressure', 'barometer', 'airpressure', 'baro', 'pressurehpa'],
+  pressure: ['barometricpressure', 'barometer', 'airpressure', 'baro', 'atmosphericpressure'],
+  pressure_air_only: ['pressure', 'pressurehpa'],
   light: ['illuminance', 'luminosity', 'lux', 'light', 'lightintensity', 'illum', 'ill', 'illlx'],
   co2: ['co2', 'co2ppm', 'carbondioxide', 'airco2'],
   pm25: ['pm25', 'pm25ugm3'],
@@ -200,7 +223,7 @@ const BY_ATTR = {
     celsius: 'temperature',
   },
   humidity: { '%': 'humidity' },
-  pressure: { hpa: 'pressure', mbar: 'pressure', pa: 'pressure' },
+  pressure: { hpa: 'pressure', mbar: 'pressure', pa: 'pressure_air_only' },
   illuminance: { lx: 'light', lux: 'light' },
   carbon_dioxide: { ppm: 'co2' },
   pm25: { 'µg/m³': 'pm25', 'ug/m3': 'pm25', 'μg/m³': 'pm25' },
@@ -243,7 +266,28 @@ export function valueOf(kindName, value) {
 
 export const idsOf = (gladys, platformId) => gladys.externalIds(DEVICE_TYPE, platformId);
 
-const cleanName = (value, max) =>
+/** A detector (leak, motion): every recent change is published live. */
+export const isBinaryKind = (kindName) =>
+  Object.hasOwn(KINDS, kindName) && KINDS[kindName].type === TYPES.SENSOR.BINARY;
+
+/**
+ * The kind matching a feature already created (category, type, unit), so a
+ * field keeps the unit of its feature even after /data was lost; null when
+ * none matches (the field is then left out rather than published wrong).
+ */
+export function kindOfFeature(feature, only) {
+  const match = Object.entries(KINDS).find(
+    ([name, k]) =>
+      (only === undefined || name === only) &&
+      k.category === feature.category &&
+      k.type === feature.type &&
+      (k.unit ?? null) === (feature.unit ?? null),
+  );
+  return match ? match[0] : null;
+}
+
+/** A name without control characters, bounded. */
+export const cleanName = (value, max) =>
   [...String(value ?? '')]
     .filter((c) => c.charCodeAt(0) >= 0x20 && c.charCodeAt(0) !== 0x7f)
     .join('')

@@ -121,3 +121,24 @@ test('the cursor and the devices are written at most once a minute; a request at
   store.update({ lastAttemptAt: clock.now() }, { urgent: true });
   assert.equal(storage.writes(), writes + 2, 'nothing changed: nothing written');
 });
+
+test('M3: only a refused key (401) leaves a fingerprint; 403 / 404 (a working key) none', () => {
+  const clock = createClock();
+  const storage = memoryStorage();
+  const config = normalizeConfig(CONFIG);
+  const store = new StateStore({ storage, now: clock.now, ...options });
+  store.restore(config);
+  for (const why of ['rights', 'notFound']) {
+    store.update(
+      { refusedUntil: clock.now() + REFUSED_BACKOFF, refusedWhy: why },
+      { urgent: true, config },
+    );
+    assert.equal(storage.load().state.fp, '', why);
+    assert.equal(storage.load().state.refusedWhy, why);
+  }
+  store.update(
+    { refusedUntil: clock.now() + REFUSED_BACKOFF, refusedWhy: 'key' },
+    { urgent: true, config },
+  );
+  assert.match(storage.load().state.fp, /^[0-9a-f]{32}$/);
+});

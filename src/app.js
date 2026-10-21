@@ -12,8 +12,12 @@ import {
   BUSY_BASE,
   BUSY_MAX,
   BUSY_MIN,
+  CATCHUP_MAX_AGE,
+  CATCHUP_MAX_POINTS,
   FIRST_PUBLISH_MAX_AGE,
   FIRST_WINDOW,
+  FORGET_AFTER,
+  LIVE_MARGIN,
   MAX_DEVICES,
   MAX_FIELDS,
   MAX_UPLINKS,
@@ -24,7 +28,16 @@ import {
 } from './constants.js';
 import { T } from './i18n.js';
 import { parseUplink } from './parse.js';
-import { createdFeatures, deviceOf, idsOf, kindOf, valueOf } from './readings.js';
+import {
+  cleanName,
+  createdFeatures,
+  deviceOf,
+  idsOf,
+  isBinaryKind,
+  kindOf,
+  kindOfFeature,
+  valueOf,
+} from './readings.js';
 import { StateStore, memoryStorage } from './store.js';
 import { TtnError, readUplinks } from './ttn.js';
 
@@ -76,17 +89,21 @@ export class TtnApp {
    * (Re)start with a configuration. The same configuration again (a
    * reconnection to Gladys, an unchanged configuration saved) keeps
    * everything, a read in flight included, and only publishes the status and
-   * the Discovery list again (the core keeps them in memory only). Another
-   * configuration starts a new generation: an answer to the previous one
-   * publishes nothing.
+   * the Discovery list again (the core keeps them in memory only). Only
+   * another host, application or key starts a new generation (an answer to
+   * the previous one publishes nothing); a new interval alone keeps the read
+   * in flight and applies to the last request.
    */
   async start(raw = {}) {
     const config = normalizeConfig(raw);
-    const key = JSON.stringify(config);
+    const { host, applicationId, apiKey, problems } = config;
+    const key = JSON.stringify({ host, applicationId, apiKey, problems });
     this.connected = true;
     this.lastStatus = undefined;
     this.lastDiscovered = undefined;
-    if (!this.started || key !== this.configKey) {
+    if (this.started && key === this.configKey) {
+      this.config = config;
+    } else {
       this.generation += 1;
       const previous = this.config;
       this.config = config;
@@ -121,6 +138,36 @@ export class TtnApp {
     await this.publishDiscovered();
     await this.refreshStatus();
     await this.tick();
+  }
+
+  /**
+   * (Re)connected: read the configuration from Gladys, with a few bounded
+   * tries (2 s, 10 s, 30 s apart) when it fails, then start. Never loops:
+   * after the last try, the next reconnection or saved configuration starts.
+   */
+  async startFromGladys(getConfig, delays = [2_000, 10_000, 30_000]) {
+    for (let attempt = 0; ; attempt += 1) {
+      let config;
+      try {
+        config = await getConfig();
+      } catch (err) {
+        if (attempt >= delays.length) {
+          this.logger.error(`Reading the configuration failed: ${this.scrub(err)}`);
+          return false;
+        }
+        this.logger.warn(`Reading the configuration failed, new try: ${this.scrub(err)}`);
+        await this.sleep(delays[attempt]);
+        continue;
+      }
+      await this.start(config);
+      return true;
+    }
+  }
+
+  sleep(ms) {
+    return new Promise((resolve) => {
+      this.timers.setTimeout(resolve, ms);
+    });
   }
 
   /** Disconnected or shutting down: no timer, nothing published; a read in flight may finish. */
@@ -250,7 +297,13 @@ export class TtnApp {
     }
     this.error = undefined;
     this.store.update({ pausedUntil: 0, streak: 0, refusedUntil: 0 });
-    this.lastRead = { at: this.now(), uplinks: result.uplinks.length, truncated: result.truncated };
+    this.lastRead = {
+      at: this.now(),
+      uplinks: result.uplinks.length,
+      truncated: result.truncated,
+      tooLarge: result.tooLarge,
+      skipped: result.skipped,
+    };
     this.apply(result.uplinks);
     return true;
   }
@@ -265,15 +318,15 @@ export class TtnApp {
     );
     this.store.update({ streak, pausedUntil: at + pause }, { urgent: true });
   }
-
   /**
-   * The uplinks (newest first) -> the newest value of each field of each
-   * device, the new fields, and the states of the uplinks not published yet.
+   * The uplinks (newest first) -> per device and field, every value of the
+   * window (bounded), the new fields, and the states of the uplinks not
+   * published yet.
    */
   apply(uplinks) {
     const now = this.now();
     const app = this.config.applicationId;
-    /** device id -> { devEui, receivedAt, fields: Map<key, { field, at }> } */
+    /** device id -> { devEui, receivedAt, fields: Map<key, { field, points: [{ raw, at }] }> } */
     const byDevice = new Map();
     let newest = 0;
     for (const up of uplinks) {
@@ -290,12 +343,19 @@ export class TtnApp {
         continue; // an older uplink of another device under the same id
       }
       for (const field of parsed.fields) {
-        if (!device.fields.has(field.key)) {
-          device.fields.set(field.key, { field, at: parsed.receivedAt });
+        let slot = device.fields.get(field.key);
+        if (!slot) {
+          // The newest uplink comes first: its field decides a new kind.
+          slot = { field, points: [] };
+          device.fields.set(field.key, slot);
+        }
+        if (slot.points.length < CATCHUP_MAX_POINTS) {
+          slot.points.push({ raw: field.value, at: parsed.receivedAt });
         }
       }
     }
     this.tooMany = false;
+    this.forgetOldDevices(now);
     const states = [];
     for (const [deviceId, device] of byDevice) {
       states.push(...this.applyDevice(deviceId, device, now));
@@ -304,6 +364,30 @@ export class TtnApp {
       this.store.update({ cursor: newest });
     }
     this.budget.enqueue(states);
+  }
+
+  /** Devices not heard of for 30 days and not created in Gladys are forgotten. */
+  forgetOldDevices(now) {
+    const created = new Set((this.gladys.devices ?? []).map((d) => d.external_id));
+    for (const [deviceId, d] of [...this.store.devices]) {
+      if (d.lastUplinkAt < now - FORGET_AFTER && !created.has(idsOf(this.gladys, d.pid).device)) {
+        this.store.deleteDevice(deviceId);
+        this.track.delete(deviceId);
+      }
+    }
+  }
+
+  /** The kind of a field that the created feature already fixes (after a loss of /data). */
+  createdKind(pid, key, field) {
+    const id = idsOf(this.gladys, pid).feature(key);
+    const feature = createdFeatures(this.gladys, pid).find((f) => f.external_id === id);
+    if (!feature) {
+      return undefined;
+    }
+    // The kind of the name, when it gives the same feature; else any kind
+    // that gives it (never another unit than the created one).
+    const named = kindOf(field);
+    return named && kindOfFeature(feature, named) ? named : kindOfFeature(feature);
   }
 
   applyDevice(deviceId, device, now) {
@@ -328,35 +412,48 @@ export class TtnApp {
       entry = { pid: next.pid, values: new Map(), ignored: new Set() };
     }
     const kinds = new Map(next.fields.map((f) => [f.key, f.kind]));
-    const fresh = [];
-    for (const [key, { field, at }] of device.fields) {
+    const firstSight = saved === undefined || saved.lastUplinkAt === 0;
+    const oldest = now - (firstSight ? FIRST_PUBLISH_MAX_AGE : CATCHUP_MAX_AGE);
+    // A value received since the previous read (with a margin) is "live":
+    // published without a date, so Gladys runs the scenes on it.
+    const liveFrom = now - this.intervalMs() - LIVE_MARGIN;
+    const items = [];
+    for (const [key, { field, points }] of device.fields) {
       let kind = kinds.get(key);
       if (!kind) {
         // The kind is chosen once, at the first sight of the field, and kept
-        // (the unit of a created feature never changes).
-        kind = kindOf(field);
+        // (the unit of a created feature never changes): the created feature
+        // decides first, then the name or the declared unit.
+        const fixed = this.createdKind(next.pid, key, field);
+        kind = fixed === undefined ? kindOf(field) : fixed;
         if (!kind || next.fields.length >= MAX_FIELDS) {
           if (entry.ignored.size < 30) {
-            entry.ignored.add(field.raw.slice(0, 40));
+            entry.ignored.add(cleanName(field.raw, 40));
           }
           continue;
         }
-        next.fields.push({ key, kind, name: field.raw });
+        next.fields.push({ key, kind, name: cleanName(field.raw, 60) || key });
         kinds.set(key, kind);
       }
-      const value = valueOf(kind, field.value);
-      if (value === null) {
+      const values = points
+        .map(({ raw, at }) => ({ value: valueOf(kind, raw), at }))
+        .filter((p) => p.value !== null)
+        .sort((a, b) => a.at - b.at);
+      if (values.length === 0) {
         continue;
       }
+      const last = values[values.length - 1];
       const old = entry.values.get(key);
-      if (!old || old.at < at) {
-        entry.values.set(key, { value, at, queued: false });
+      if (!old || old.at < last.at) {
+        entry.values.set(key, last);
       }
-      // Never twice the same uplink; at the very first read, only the last
-      // few hours (an old value is history, not the current state).
-      const firstSight = saved === undefined || saved.lastUplinkAt === 0;
-      if (at > next.lastUplinkAt && (!firstSight || at >= now - FIRST_PUBLISH_MAX_AGE)) {
-        fresh.push(key);
+      // Every uplink not published yet, oldest first, within the catch-up
+      // bound; never twice the same uplink.
+      const todo = values.filter((p) => p.at > next.lastUplinkAt && p.at >= oldest);
+      const binary = isBinaryKind(kind);
+      for (const [i, p] of todo.entries()) {
+        const live = p.at >= liveFrom && (binary || i === todo.length - 1);
+        items.push({ key, value: p.value, at: p.at, live });
       }
     }
     next.lastUplinkAt = Math.max(next.lastUplinkAt, device.receivedAt);
@@ -365,34 +462,41 @@ export class TtnApp {
       return [];
     }
     this.track.set(deviceId, entry);
-    return this.statesOf(entry, fresh);
+    return this.statesOf(entry.pid, items);
   }
 
-  /** The states of `keys` of a device whose feature exists in Gladys. */
-  statesOf(entry, keys) {
-    const ids = idsOf(this.gladys, entry.pid);
-    const created = new Set(createdFeatures(this.gladys, entry.pid).map((f) => f.external_id));
+  /**
+   * The states of `items` ({ key, value, at, live }) of a device whose
+   * feature exists in Gladys: dated with the uplink, or live (no date). The
+   * `_key` (feature, uplink time) indexes the queue of the budget.
+   */
+  statesOf(pid, items) {
+    const ids = idsOf(this.gladys, pid);
+    const created = new Set(createdFeatures(this.gladys, pid).map((f) => f.external_id));
     const states = [];
-    for (const key of keys) {
-      const value = entry.values.get(key);
+    for (const { key, value, at, live } of items) {
       const id = ids.feature(key);
-      if (value && created.has(id) && Number.isFinite(value.value)) {
-        value.queued = true;
+      if (created.has(id) && Number.isFinite(value)) {
         states.push({
           device_feature_external_id: id,
-          state: value.value,
-          created_at: new Date(value.at).toISOString(),
+          state: value,
+          ...(live ? {} : { created_at: new Date(at).toISOString() }),
+          _key: `${id}|${at}`,
         });
       }
     }
     return states;
   }
 
-  /** A device was created in Gladys: its latest values not sent yet go now. */
+  /**
+   * A device was (re)created in Gladys: the latest value of each of its
+   * features goes now, dated with its uplink (the core ignores a state it
+   * already has with the same date and value).
+   */
   async onDeviceCreated() {
     for (const entry of this.track.values()) {
-      const keys = [...entry.values].filter(([, v]) => !v.queued).map(([key]) => key);
-      this.budget.enqueue(this.statesOf(entry, keys));
+      const items = [...entry.values].map(([key, v]) => ({ key, ...v, live: false }));
+      this.budget.enqueue(this.statesOf(entry.pid, items));
     }
     if (this.connected) {
       await this.budget.flush();
@@ -470,8 +574,13 @@ export class TtnApp {
     } else if (this.lastRead && this.store.devices.size === 0) {
       parts.push(T.noUplink);
     }
-    if (this.lastRead?.truncated) {
+    if (this.lastRead?.tooLarge) {
+      parts.push(T.tooLarge);
+    } else if (this.lastRead?.truncated) {
       parts.push(T.truncated(MAX_UPLINKS));
+    }
+    if (this.lastRead?.skipped > 0) {
+      parts.push(T.skipped(this.lastRead.skipped));
     }
     if (this.tooMany) {
       parts.push(T.tooMany(MAX_DEVICES));

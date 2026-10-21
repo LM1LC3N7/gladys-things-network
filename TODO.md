@@ -68,8 +68,11 @@
   hint.
 - **Servers**: eu1, nam1, au1 of `cloud.thethings.network`, or another host
   typed by the user (The Things Stack Cloud tenant, self-hosted): HTTPS host
-  names only (no `http://`, no IP, no path, no credentials); no redirection
-  followed, so the key never reaches another host.
+  names only (no `http://`, no path, no credentials, no IP address: a last
+  label that the WHATWG URL parser reads as a number, decimal, octal or
+  hexadecimal, is refused, the parsed host name must equal what was typed
+  and `net.isIP` must say 0; review 1, I2); no redirection followed, so the
+  key never reaches another host.
 - **Free decoded fields**: a field becomes a feature only when its meaning
   AND its unit are known: from its declared `_sensor_attr` (device class +
   unit, never guessed from the name when declared), else from its name
@@ -78,10 +81,18 @@
   checked by `test/manifest.test.js` and the SDK's fake Gladys); bounds per
   kind, a value out of them is left out, never clamped. Ambiguous names are
   refused rather than guessed: a bare `distance` (unit unknown), a bare
-  `battery` that is not a whole number (a voltage), `analog_in`, VOC (units
-  differ between sensors). The pressure is told apart by its range (hPa or
-  Pa, which never overlap). The kind of a field is frozen at first sight
-  (persisted).
+  `battery`/`bat` that is not a whole number from 6 to 100 (a voltage, a
+  rounded voltage, the LoRaWAN 0-254 scale; review 1, M9), `analog_in`, VOC
+  (units differ between sensors). An air pressure (`barometric_pressure`,
+  `baro`...) is told apart from Pa by its range; a bare `pressure` may be a
+  water pressure (kPa, bar): kept only within 850-1100 hPa (or Pa), no kPa
+  conversion (review 1, I4). Leak and motion: true/false or a whole number,
+  any count above 0 means detected (Elsys `motion` counts PIR detections;
+  review 1, I4). The kind of a field is frozen at first sight (persisted);
+  after a loss of `/data`, a created feature decides it (a kind giving the
+  same category, type and unit), and a field whose created feature matches
+  no kind is left out (review 1, M6). Field names are cleaned of control
+  characters (M10).
 - **Battery voltage** is an `energy-sensor` / `voltage` feature in volts
   (the core has no battery-voltage category; millivolts are converted).
 - **Identity**: the external id is `ttn:eui-<DevEUI>` (the hardware), or
@@ -89,46 +100,69 @@
   under a known device id is another device; a missing DevEUI is never
   "another device". The application id of each uplink must be the
   configured one.
-- **Each uplink published once**, with `created_at` = its `received_at`
-  (publishStates, not publishChangedStates: a LoRaWAN value repeated is a new
-  measure, and no heartbeat would date an old value as new). The time of
-  the last uplink published per device is persisted. At the very first
-  sight of a device, only uplinks of the last 3 hours are published.
+- **Each uplink published once, oldest first (review 1, B1 + I1)**: every
+  value of every uplink of the window (at most 48 per feature) not published
+  yet (time after the last uplink published for the device, persisted). The
+  core runs the scenes only for a state WITHOUT `created_at` (saveState;
+  saveHistoricalState emits no trigger): the newest value of a feature,
+  received since the previous read (after now - interval - 2 min), is sent
+  without date ("live"); for leak and motion, every value of that period is
+  sent live, in order (a leak 0 -> 1 -> 0 triggers and ends at 0). Older
+  values (catch-up after a pause, a refusal, a stop: the last 6 hours; at the
+  very first sight of a device, the last 3 hours) are sent with `created_at`
+  = `received_at`, oldest first: history only, no scene. publishStates, not
+  publishChangedStates (a repeated LoRaWAN value is a new measure).
 - **Budget of 300 states per minute**: every state goes through one queue
-  (`src/budget.js`), sent in batches of at most 100, one at a time, the room
-  reserved before each batch (two publications at once share it); a newer
-  value of a feature replaces an older one waiting; bounded to 3000 waiting
-  states. Only features of created devices are sent; a device created later
-  gets its latest values at once (onDeviceCreated), never twice.
+  (`src/budget.js`) indexed by (feature, uplink time): the same uplink queued
+  twice is kept once and keeps its place, two uplinks of a feature both wait;
+  sent in order, in batches of at most 100, one at a time, the room reserved
+  before each batch (two publications at once share it) and dated again at
+  the END of the request, since the core's minute starts at arrival (review
+  1, M1); a failed batch goes back in front, in order; bounded to 3000
+  waiting states (the oldest dropped). Only features of created devices are
+  sent; a device created (or created again) gets the latest value of each
+  feature at once, dated (the core ignores a state it already has; M7).
 - **Pace**: 5 minutes by default (2 to 60), one request per read, at most
   1000 uplinks (a truncated read is said in the status). The instant of
   every request is written before it leaves; nothing reads before it + the
-  interval: not the test button, a reconnection, a saved configuration (the
-  same configuration keeps even a read in flight; another one starts a new
-  generation and an answer to the previous one publishes nothing and sets no
-  status) nor a restart. Another host, application or key is read at once.
+  interval: not the test button, a reconnection, a saved configuration nor a
+  restart. Only another host, application or key starts a new generation (an
+  answer to the previous one publishes nothing and sets no status) and is
+  read at once; a new interval alone keeps the read in flight (review 1,
+  M4). At `connected`, a failing `getConfig` is tried again 3 times (2 s,
+  10 s, 30 s), then waits for the next reconnection (M5). A device silent for
+  30 days and not created in Gladys is forgotten (M8).
 - **Errors**: 401 (key), 403 (right), 404 (application or Storage
   Integration), or the same gRPC codes in a stream error line: reads stopped
   for 6 hours (the test button may try again once the interval has passed),
   at once with another configuration; 429/5xx: pause (Retry-After, else 5
   minutes doubling, 1 minute - 6 hours, kept across a reconfiguration of the
-  same host); other failures retried at the interval.
+  same host), also when the error body is huge (read up to 64 KB, the status
+  and Retry-After decide; review 1, M2); other failures retried at the
+  interval.
 - **Persisted state (`/data/things-network-state.json`)**: host,
   application, last request, pause, streak, refusal and its reason, the
   newest uplink seen, and per device its identity, fields (key, kind, name)
-  and last uplink published. Never the key: only while a key is refused, a
-  salted scrypt fingerprint of that refused (host, application, key),
-  erased by the first success. Times read back are capped, everything
-  re-validated; the request, a pause and a refusal are written at once, the
-  rest at most once a minute; written atomically.
+  and last uplink published. Never the key: only while a key is refused
+  (401), a salted scrypt fingerprint of that refused (host, application,
+  key), erased by the first success. A 403 or 404 (the key itself works)
+  keeps no fingerprint (review 1, M3): after a restart, a key changed while
+  the container was stopped then waits for the end of the 6 hours, or the
+  test button. Times read back are capped, everything re-validated; the
+  request, a pause and a refusal are written at once, the rest at most once
+  a minute; written atomically.
 - **Secrets**: the API key is described as "kept by Gladys in its database,
   never shown again", sent only in the Authorization header to the chosen
   host, never in a URL, a log (messages scrubbed), a status, an error or
   `/data`.
-- **Bounded answers**: 8 MB, 256 KB per line, 60 s per request, read line
-  by line (pieces joined once per line: linear); at most 64 fields per
-  uplink, nesting depth 3, 100 devices, 24 features per device. Only own
-  keys are read, results built in Maps: no prototype pollution.
+- **Bounded answers (review 1, I3)**: 8 MB, 256 KB per line, 60 s per
+  request, read line by line (pieces joined once per line: linear). A line
+  over 256 KB is skipped up to its end and counted in the status; past 8 MB
+  the read stops, the line cut in two is dropped and what was read (the
+  newest, as the answer is newest first) is used, marked truncated, the
+  cursor moving on. At most 64 fields per uplink, nesting depth 3, 100
+  devices, 24 features per device. Only own keys are read, results built in
+  Maps: no prototype pollution.
 - **Statut and Discovery** are published again at every `connected` (the
   core keeps them in memory only); a feature of a created device is never
   dropped from the Discovery list.

@@ -38,7 +38,7 @@ gladys.onConfigUpdated(async (config) => {
 // the Discovery list again.
 gladys.on('connected', async () => {
   try {
-    await app.start(await gladys.getConfig());
+    await app.startFromGladys(() => gladys.getConfig());
   } catch (err) {
     logger.error('Start failed', app.scrub(err));
   }

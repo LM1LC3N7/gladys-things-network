@@ -225,13 +225,14 @@ export class StateStore {
   /**
    * Update the account state. `urgent` (the instant of a request, a pause, a
    * refusal) writes at once; anything else at most once a minute (see
-   * flush). A refusal with the refused `config` keeps its fingerprint;
-   * anything else erases it.
+   * flush). A refused key (401, with the refused `config`) keeps its
+   * fingerprint; a missing right or application (403, 404: the key itself
+   * works) keeps none; anything else erases it.
    */
   update(changes, { urgent = false, config } = {}) {
     const next = { ...this.state, ...changes };
-    if (changes.refusedUntil > 0 && config) {
-      next.fp = this.fingerprint(config);
+    if (changes.refusedUntil > 0) {
+      next.fp = config && next.refusedWhy === 'key' ? this.fingerprint(config) : '';
     } else if (!(next.refusedUntil > this.now())) {
       next.fp = '';
       next.refusedWhy = '';
@@ -265,6 +266,12 @@ export class StateStore {
     this.devices.set(deviceId, device);
     this.dirty = true;
     return true;
+  }
+
+  deleteDevice(deviceId) {
+    if (this.devices.delete(deviceId)) {
+      this.dirty = true;
+    }
   }
 
   /** Write what changed when the last write is a minute old or more. */

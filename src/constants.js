@@ -55,6 +55,19 @@ export const REFUSED_BACKOFF = 6 * 60 * 60_000;
 export const FIRST_PUBLISH_MAX_AGE = 3 * 60 * 60_000;
 
 /**
+ * Catching up (after a pause, a refusal, a stop): the uplinks not published
+ * yet of the last 6 hours, at most this many values per feature, dated.
+ */
+export const CATCHUP_MAX_AGE = 6 * 60 * 60_000;
+export const CATCHUP_MAX_POINTS = 48;
+
+/** An uplink received within the interval + this margin is published live (scenes run). */
+export const LIVE_MARGIN = 2 * 60_000;
+
+/** A device not heard of for this long, and not created in Gladys, is forgotten. */
+export const FORGET_AFTER = 30 * 24 * 60 * 60_000;
+
+/**
  * POST /state of Gladys admits 300 states per minute per integration: every
  * publication goes through one budget, over a sliding minute.
  */

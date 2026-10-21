@@ -62,6 +62,14 @@ export const T = {
     en: `The last read reached the limit of ${limit} uplinks: shorten the interval.`,
     fr: `La dernière lecture a atteint la limite de ${limit} messages : réduisez l'intervalle.`,
   }),
+  tooLarge: {
+    en: 'The last answer was too large (over 8 MB): only its newest part was read; shorten the interval.',
+    fr: "La dernière réponse était trop grosse (plus de 8 Mo) : seule sa partie la plus récente a été lue ; réduisez l'intervalle.",
+  },
+  skipped: (n) => ({
+    en: `${n} uplink(s) too large (over 256 KB) were skipped.`,
+    fr: `${n} message(s) trop gros (plus de 256 Ko) ignoré(s).`,
+  }),
   tooMany: (max) => ({
     en: `Only the first ${max} devices are kept.`,
     fr: `Seuls les ${max} premiers appareils sont gardés.`,

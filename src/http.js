@@ -52,14 +52,18 @@ const reasonOf = (err) => {
 
 /**
  * Split a body into lines as it arrives, linear in its size: the pieces of
- * the line being read are joined once, when its end arrives; a line longer
- * than `maxLine`, or a body longer than `maxBytes`, stops the read.
+ * the line being read are joined once, when its end arrives. A line longer
+ * than `maxLine` is skipped (up to its end) and counted; past `maxBytes`, the
+ * read stops, the line cut in two is dropped and what was read is kept
+ * (`truncated`). Resolves `{ truncated, skipped }`.
  */
-async function readLines(response, url, { maxBytes, maxLine, onLine }) {
+async function readLines(response, { maxBytes, maxLine, onLine }) {
   const decoder = new TextDecoder('utf-8');
   let pieces = [];
   let partial = 0;
-  let size = 0;
+  let skipping = false;
+  let skipped = 0;
+  let truncated = false;
   const feed = (text) => {
     let start = 0;
     for (;;) {
@@ -68,32 +72,39 @@ async function readLines(response, url, { maxBytes, maxLine, onLine }) {
         break;
       }
       const piece = text.slice(start, end);
-      if (partial + piece.length > maxLine) {
-        throw new NetworkError(url, 'line too long');
+      start = end + 1;
+      if (skipping || partial + piece.length > maxLine) {
+        skipped += 1;
+      } else {
+        onLine(pieces.length > 0 ? pieces.join('') + piece : piece);
       }
-      const line = pieces.length > 0 ? pieces.join('') + piece : piece;
       pieces = [];
       partial = 0;
-      onLine(line);
-      start = end + 1;
+      skipping = false;
     }
     const rest = text.slice(start);
-    if (rest) {
+    if (rest && !skipping) {
       partial += rest.length;
       if (partial > maxLine) {
-        throw new NetworkError(url, 'line too long');
+        // Too long: forgotten up to its end, never kept in memory.
+        skipping = true;
+        pieces = [];
+        partial = 0;
+      } else {
+        pieces.push(rest);
       }
-      pieces.push(rest);
     }
   };
   if (!response.body?.getReader) {
-    const text = await response.text();
+    let text = await response.text();
     if (Buffer.byteLength(text) > maxBytes) {
-      throw new NetworkError(url, 'answer too large');
+      text = Buffer.from(text).subarray(0, maxBytes).toString('utf8');
+      truncated = true;
     }
     feed(text);
   } else {
     const reader = response.body.getReader();
+    let size = 0;
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -102,7 +113,11 @@ async function readLines(response, url, { maxBytes, maxLine, onLine }) {
         }
         size += value.byteLength;
         if (size > maxBytes) {
-          throw new NetworkError(url, 'answer too large');
+          truncated = true;
+          const keep = value.byteLength - (size - maxBytes);
+          feed(decoder.decode(value.subarray(0, Math.max(0, keep)), { stream: true }));
+          await reader.cancel().catch(() => {});
+          break;
         }
         feed(decoder.decode(value, { stream: true }));
       }
@@ -110,19 +125,26 @@ async function readLines(response, url, { maxBytes, maxLine, onLine }) {
       await reader.cancel().catch(() => {});
       throw err;
     }
-    feed(decoder.decode());
+    if (!truncated) {
+      feed(decoder.decode());
+    }
   }
-  if (pieces.length > 0) {
+  if (pieces.length > 0 && !truncated && !skipping) {
     onLine(pieces.join(''));
   }
+  if (skipping) {
+    skipped += 1;
+  }
+  return { truncated, skipped };
 }
 
 /**
  * GET a document read line by line (`onLine(line)` for each). Never throws on
- * an HTTP status: resolves `{ status, retryAfterMs }`; the body of an error
- * status is read (bounded) and passed to `onLine` as well; `onLine` must not
- * throw. Throws a NetworkError when the request or the body read fails. A
- * redirection fails the call.
+ * an HTTP status: resolves `{ status, retryAfterMs, truncated, skipped }`;
+ * the body of an error status is read (at most 64 KB, the rest ignored: the
+ * status and Retry-After decide) and passed to `onLine` as well; `onLine`
+ * must not throw. Throws a NetworkError when the request or the body read
+ * fails (not when the body is only too long). A redirection fails the call.
  */
 export async function getLines(
   url,
@@ -139,8 +161,9 @@ export async function getLines(
     throw new NetworkError(url, reasonOf(err));
   }
   const ok = response.status >= 200 && response.status < 300;
+  let read;
   try {
-    await readLines(response, url, {
+    read = await readLines(response, {
       maxBytes: ok ? maxBytes : 64 * 1024,
       maxLine: ok ? maxLine : 64 * 1024,
       onLine,
@@ -151,5 +174,7 @@ export async function getLines(
   return {
     status: response.status,
     retryAfterMs: retryAfterMs(response.headers?.get?.('retry-after')),
+    truncated: read.truncated,
+    skipped: read.skipped,
   };
 }

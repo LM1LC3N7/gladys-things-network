@@ -30,8 +30,12 @@ Gladys ⇄ SDK ⇄ src/app.js (TtnApp)   when to read, pauses, devices, states, 
   feature only when its name (Cayenne LPP, common decoders, SenseCAP types)
   or its declared `_sensor_attr` gives both its meaning and a unit of the
   core; values out of bounds are left out. Kinds are frozen at first sight.
-- **States**: each uplink once, with `created_at` = its `received_at`;
-  through one budget of 300 states per sliding minute (batches of 100).
+- **States**: each uplink once, oldest first. The newest value of a feature
+  received since the previous read (interval + 2 min) is published without
+  `created_at` (Gladys runs the scenes on it); for leak and motion every
+  change of that period is; older ones (catch-up: 6 h, 48 per feature) carry
+  `created_at` = `received_at`. One queue indexed by (feature, uplink time),
+  300 states per sliding minute (batches of 100, counted from their arrival).
 - **Pace**: every 5 minutes by default (2 to 60), never faster (test button,
   reconnection and restart included: the last request is kept in `/data`).
   401/403/404 stop the reads (one try every 6 hours, or at once on a new

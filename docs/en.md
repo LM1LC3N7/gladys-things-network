@@ -68,18 +68,18 @@ them).
 | --------------- | ---------------------------------------------------------------------------------------------------------------------- | -------------------------------- |
 | Temperature     | `temperature`, `temp`, `TempC`, `TempC_SHT`, `TempC_DS`, `air_temperature`, `soil_temperature`, `water_temperature`... | °C (-50 to 125)                  |
 | Humidity        | `humidity`, `hum`, `Hum_SHT`, `relative_humidity`, `air_humidity`, `rh`                                                | %                                |
-| Pressure        | `pressure`, `barometric_pressure`, `barometer`, `air_pressure`                                                         | hPa (a value in Pa is converted) |
+| Pressure        | `barometric_pressure`, `barometer`, `air_pressure`, `baro` (300 to 1100 hPa); `pressure` alone: 850 to 1100 hPa        | hPa (a value in Pa is converted) |
 | Light           | `illuminance`, `luminosity`, `lux`, `light`, `light_intensity`, `ILL_lx`                                               | lux                              |
 | CO2             | `co2`, `co2_ppm`, `carbon_dioxide`                                                                                     | ppm                              |
 | Particles       | `pm25`, `pm2_5`, `pm10`                                                                                                | µg/m³                            |
-| Battery         | `battery_level`, `battery_percent`, `battery` or `bat` (whole numbers only)                                            | %                                |
+| Battery         | `battery_level`, `battery_percent`, `battery` or `bat`: whole numbers from 6 to 100 only                               | %                                |
 | Battery voltage | `BatV`, `battery_voltage`, `vbat`; in mV: `battery_mv`, `bat_mv`                                                       | V                                |
 | Distance        | `distance_mm`, `distance_cm`, `distance_m` (a distance without unit is ignored)                                        | mm, cm, m                        |
 | Soil moisture   | `soil_moisture`, `moisture`, `water_soil`, `vwc`                                                                       | %                                |
 | Wind            | `wind_speed` (m/s), `wind_speed_kmh`                                                                                   | m/s, km/h                        |
 | UV              | `uv`, `uv_index`                                                                                                       | UV index                         |
-| Water leak      | `leak`, `water_leak`, `leakage` (true/false or 0/1)                                                                    | detected or not                  |
-| Motion          | `motion`, `occupancy`, `pir` (true/false or 0/1)                                                                       | detected or not                  |
+| Water leak      | `leak`, `water_leak`, `leakage` (true/false or a whole number: 1 and above = detected)                                 | detected or not                  |
+| Motion          | `motion`, `occupancy`, `pir` (true/false or a whole number, e.g. a count of detections: 1 and above = detected)        | detected or not                  |
 
 **SenseCAP** sensors (Seeed) are read by their types (`Air Temperature`,
 `Air Humidity`, `Light Intensity`, `Barometric Pressure`, `UV Index`, `Wind
@@ -88,18 +88,36 @@ fields with `_sensor_attr`, as in Home Assistant:
 `{"_sensor_attr": {"distance": {"unit": "cm", "device_class": "distance"}}}`.
 
 The type and the unit of a field are chosen when it is first read, then never
-change. A feature already created is never removed from its device.
+change (after a loss of `/data`, the feature already created decides). A
+feature already created is never removed from its device.
+
+A bare `battery` or `bat` field is ambiguous: some decoders put a rounded
+voltage there (3 for 3 V) or the LoRaWAN 0-254 scale. Only a whole number from
+6 to 100 is read as a percentage; prefer a decoder that names
+`battery_level` or `BatV`.
 
 ## How it works
 
-- Each message is published **once**, dated when The Things Stack received
-  it (a value read again adds nothing to the history). At the very first
-  start, only the messages of the last 3 hours are published.
+- Each message is published **once**, in the order it was received: no value
+  is lost between two reads (a leak 0 -> 1 -> 0 does reach Gladys).
+- **Scenes**: the newest value of each feature, received since the previous
+  read (interval + 2 minutes), is published "live": Gladys then runs the
+  scenes, at the time of the read (so up to one interval after the measure),
+  and the history dates it from the read. For a water leak or a motion, every
+  change of that period is published live, in order. Older messages
+  (catching up after a pause, a refusal or a stop) are published dated when
+  they were received, oldest first: they go to the history without running a
+  scene.
+- Bounded catch-up: the messages of the last 6 hours, at most 48 per feature.
+  At the very first start, only those of the last 3 hours.
 - A device is identified by its **DevEUI** (or, without one, by the
   application and device IDs): a device deleted and created again with
   another DevEUI under the same ID becomes a new device.
-- At most 100 devices, 24 values per device and 1000 messages per read
-  (beyond, the status advises a shorter interval).
+- At most 100 devices (a device silent for 30 days and not created in Gladys
+  is forgotten), 24 values per device and 1000 messages per read. A message
+  over 256 KB is skipped (and counted in the status); an answer over 8 MB is
+  read up to that bound (newest first): the status says so and advises a
+  shorter interval.
 - Gladys accepts 300 states per minute: the states leave in batches, within
   that budget; the rest waits for the next minute.
 

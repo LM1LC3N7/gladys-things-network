@@ -86,7 +86,11 @@ test('first read: one request for the last 24 h, the devices and their values in
     const states = gladys.fake.states;
     assert.equal(states.length, 3);
     assert.equal(gladys.fake.lastState(`${device.external_id}:tempc_sht`), 21.5);
-    assert.equal(states[0].created_at, '2026-10-21T10:00:00.123Z');
+    assert.equal(
+      states[0].created_at,
+      undefined,
+      'received since the last read: live (scenes run)',
+    );
     assert.equal(gladys.fake.connectionStatus.connected, true);
     assert.match(gladys.fake.connectionStatus.message.fr, /Application home-sensors : 1 appareil/);
   } finally {
@@ -116,7 +120,6 @@ test('an uplink is never published twice, and the next read asks only for what c
     assert.deepEqual(gladys.fake.states[3], {
       device_feature_external_id: `ext:${SELECTOR}:ttn:${PID}:tempc_sht`,
       state: 22,
-      created_at: '2026-10-21T10:08:00.000Z',
     });
   } finally {
     fetch.restore();
@@ -436,15 +439,19 @@ test('a device created later gets its latest values at once, without a request',
     gladys.onDeviceCreated(() => app.onDeviceCreated());
     await gladys.fake.deviceCreated(createdDevice());
     assert.equal(gladys.fake.states.length, 3);
+    // Created again (deleted, then created): the latest values again, with
+    // the same date (the core ignores a state it already has) (M7).
     await app.onDeviceCreated();
-    assert.equal(gladys.fake.states.length, 3, 'never twice');
+    assert.equal(gladys.fake.states.length, 6);
+    assert.deepEqual(gladys.fake.states.slice(3), gladys.fake.states.slice(0, 3));
+    assert.equal(gladys.fake.states[0].created_at, '2026-10-21T10:00:00.123Z');
     assert.equal(fetch.calls.length, 1);
   } finally {
     fetch.restore();
   }
 });
 
-test('a stream error line, a body too large or a line too long fail the read cleanly', async () => {
+test('a stream error line fails the read; a line too long is skipped, the rest kept (I3)', async () => {
   const fetch = installFetch([
     [STORAGE, () => stream([uplink()], { extra: [JSON.stringify({ error: { code: 16 } })] })],
   ]);
@@ -456,11 +463,21 @@ test('a stream error line, a body too large or a line too long fail the read cle
   } finally {
     fetch.restore();
   }
-  const long = installFetch([[STORAGE, () => new Response('x'.repeat(300 * 1024))]]);
+  const big = JSON.stringify({
+    result: uplink({ deviceId: 'chatty-one', payload: { x: 'y'.repeat(300 * 1024) } }),
+  });
+  const body = `${JSON.stringify({ result: uplink() })}\n\n${big}\n\n`;
+  const long = installFetch([[STORAGE, () => new Response(body)]]);
   try {
-    const { app, gladys } = await setup();
+    const { app, gladys } = await setup({ devices: [createdDevice()] });
     await app.start(CONFIG);
-    assert.match(gladys.fake.connectionStatus.message.en, /no answer from the server/);
+    assert.equal(gladys.fake.connectionStatus.connected, true);
+    assert.match(
+      gladys.fake.connectionStatus.message.en,
+      /1 uplink\(s\) too large \(over 256 KB\) were skipped/,
+    );
+    assert.equal(gladys.fake.states.length, 3, 'the other uplinks are published');
+    assert.equal(app.store.get().cursor, Date.parse('2026-10-21T10:00:00.123Z'), 'cursor moved');
   } finally {
     long.restore();
   }
@@ -476,6 +493,232 @@ test('not configured: no request, a status that says what is missing', async () 
     assert.match(gladys.fake.connectionStatus.message.fr, /clé API manquante/);
     assert.match((await app.testConnection()).en, /application ID not understood/);
     assert.equal(fetch.calls.length, 0);
+  } finally {
+    fetch.restore();
+  }
+});
+
+// --- Review 1 ------------------------------------------------------------------------
+
+const leakDevice = () => createdDevice([{ key: 'water_leak', kind: 'leak', name: 'water_leak' }]);
+
+test('B1+I1: a leak 0 -> 1 -> 0 within one read is published live, in order, and triggers', async () => {
+  const fetch = installFetch([
+    [
+      STORAGE,
+      () =>
+        stream([
+          uplink({ at: '2026-10-21T10:04:00Z', payload: { water_leak: false } }),
+          uplink({ at: '2026-10-21T10:02:00Z', payload: { water_leak: true } }),
+          uplink({ at: '2026-10-21T10:01:00Z', payload: { water_leak: false } }),
+        ]),
+    ],
+  ]);
+  try {
+    const { app, gladys } = await setup({ devices: [leakDevice()] });
+    await app.start(CONFIG);
+    assert.deepEqual(
+      gladys.fake.states.map((s) => [s.state, s.created_at]),
+      [
+        [0, undefined],
+        [1, undefined],
+        [0, undefined],
+      ],
+      'no created_at: the core runs saveState and the scenes on each',
+    );
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('B1+I1: catching up, each uplink once, oldest first; only the recent newest is live', async () => {
+  let answer = [uplink({ at: '2026-10-21T10:04:00Z', payload: { TempC_SHT: 20 } })];
+  const fetch = installFetch([[STORAGE, () => stream(answer)]]);
+  try {
+    const { app, gladys, clock, timers } = await setup({ devices: [createdDevice()] });
+    await app.start(CONFIG);
+    assert.equal(gladys.fake.states.length, 1);
+    // An hour later (a pause): four uplinks, three older than the interval.
+    clock.advance(60 * 60_000);
+    answer = ['11:03', '10:50', '10:30', '10:10'].map((hm, i) =>
+      uplink({ at: `2026-10-21T${hm}:00Z`, payload: { TempC_SHT: 30 - i } }),
+    );
+    await timers.runIntervals();
+    assert.deepEqual(
+      gladys.fake.states.slice(1).map((s) => [s.state, s.created_at]),
+      [
+        [27, '2026-10-21T10:10:00.000Z'],
+        [28, '2026-10-21T10:30:00.000Z'],
+        [29, '2026-10-21T10:50:00.000Z'],
+        [30, undefined],
+      ],
+    );
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('B1: at the very first start, a value of 2 h is dated, one of 4 h never published', async () => {
+  const fetch = installFetch([
+    [
+      STORAGE,
+      () =>
+        stream([
+          uplink({ at: '2026-10-21T08:05:00Z', payload: { TempC_SHT: 18 } }),
+          uplink({ at: '2026-10-21T06:00:00Z', payload: { TempC_SHT: 17 } }),
+        ]),
+    ],
+  ]);
+  try {
+    const { app, gladys } = await setup({ devices: [createdDevice()] });
+    await app.start(CONFIG);
+    assert.deepEqual(gladys.fake.states, [
+      {
+        device_feature_external_id: `ext:${SELECTOR}:ttn:${PID}:tempc_sht`,
+        state: 18,
+        created_at: '2026-10-21T08:05:00.000Z',
+      },
+    ]);
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('I4: a motion count above 1 is "detected"; a bare pressure of 350 is left out', async () => {
+  const fetch = installFetch([
+    [STORAGE, () => stream([uplink({ payload: { motion: 5, pressure: 350, TempC_SHT: 21 } })])],
+  ]);
+  try {
+    const devices = [
+      createdDevice([
+        { key: 'motion', kind: 'motion', name: 'motion' },
+        { key: 'pressure', kind: 'pressure_air_only', name: 'pressure' },
+      ]),
+    ];
+    const { app, gladys } = await setup({ devices });
+    await app.start(CONFIG);
+    assert.deepEqual(
+      gladys.fake.states.map((s) => [s.device_feature_external_id.split(':').pop(), s.state]),
+      [['motion', 1]],
+    );
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('M4: a new interval during a read keeps its answer', async () => {
+  const gate = deferred();
+  const fetch = installFetch([[STORAGE, () => gate.promise]]);
+  try {
+    const { app, gladys } = await setup({ devices: [createdDevice()] });
+    const first = app.start(CONFIG);
+    await until(() => fetch.calls.length === 1);
+    const second = app.start({ ...CONFIG, poll_interval: 10 });
+    gate.resolve(stream([uplink()]));
+    await Promise.all([first, second]);
+    assert.equal(gladys.fake.states.length, 3);
+    assert.equal(fetch.calls.length, 1);
+    assert.match(gladys.fake.connectionStatus.message.en, /read every 10 min/);
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('M5: the configuration is asked again a few times when Gladys fails to give it', async () => {
+  const fetch = installFetch([[STORAGE, () => stream([])]]);
+  try {
+    const { app, gladys } = await setup();
+    const waits = [];
+    app.sleep = async (ms) => {
+      waits.push(ms);
+    };
+    let calls = 0;
+    const ok = await app.startFromGladys(async () => {
+      calls += 1;
+      if (calls < 3) {
+        throw new Error('HTTP 503');
+      }
+      return CONFIG;
+    });
+    assert.equal(ok, true);
+    assert.deepEqual(waits, [2_000, 10_000]);
+    assert.equal(gladys.fake.connectionStatus.connected, true);
+    const never = await app.startFromGladys(async () => {
+      throw new Error('down');
+    });
+    assert.equal(never, false, 'bounded: no loop');
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('M6: after a loss of /data, a field keeps the unit of its created feature', async () => {
+  const fetch = installFetch([
+    [STORAGE, () => stream([uplink({ payload: { temperature_3: 21.5, BatV: 3.1 } })])],
+  ]);
+  try {
+    const gladys0 = createFakeGladys({ selector: SELECTOR });
+    const device = {
+      ...deviceOf(gladys0, {
+        platformId: PID,
+        name: 'x',
+        fields: [{ key: 'temperature_3', kind: 'temperature', name: 'temperature_3' }],
+      }),
+      id: 'd1',
+    };
+    // The user's feature is in Fahrenheit (no kind of this integration gives it).
+    device.features.push({
+      ...device.features[0],
+      external_id: `${device.external_id}:batv`,
+      unit: 'fahrenheit',
+    });
+    const { app, gladys } = await setup({ devices: [device] });
+    await app.start(CONFIG);
+    assert.deepEqual(
+      gladys.fake.states.map((s) => s.device_feature_external_id.split(':').pop()),
+      ['temperature_3'],
+    );
+    assert.deepEqual(
+      app.store.device('lht65-garden').fields.map((f) => [f.key, f.kind]),
+      [['temperature_3', 'temperature']],
+    );
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('M8: a device unheard of for 30 days and not created is forgotten', async () => {
+  const fetch = installFetch([[STORAGE, () => stream([uplink({ deviceId: 'new-one' })])]]);
+  try {
+    const clock = createClock();
+    const storage = memoryStorage({
+      state: { app: APP, host: 'eu1.cloud.thethings.network' },
+      devices: {
+        'gone-one': {
+          pid: 'eui-0011223344556677',
+          fields: [['tempc', 'temperature', 'TempC']],
+          lastUplinkAt: clock.now() - 31 * 86_400_000,
+        },
+      },
+    });
+    const { app } = await setup({ storage, clock });
+    await app.start(CONFIG);
+    assert.deepEqual([...app.store.devices.keys()], ['new-one']);
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('M10: field names are cleaned of control characters in the test button text', async () => {
+  const fetch = installFetch([
+    [STORAGE, () => stream([uplink({ payload: { 'odd\u0007name': 1 } })])],
+  ]);
+  try {
+    const { app } = await setup();
+    await app.start(CONFIG);
+    const answer = await app.testConnection();
+    assert.match(answer.en, /ignored fields: oddname/);
+    assert.ok(!answer.en.includes('\u0007'));
   } finally {
     fetch.restore();
   }

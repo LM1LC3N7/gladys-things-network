@@ -3,6 +3,7 @@
 // the rest of the code never deals with strings or `undefined`.
 // -----------------------------------------------------------------------------
 
+import { isIP } from 'node:net';
 import { CLUSTERS } from './constants.js';
 
 // Defaults: they MUST match the `default` values of the manifest
@@ -55,8 +56,20 @@ export function parseHost(text) {
   if (labels.length < 2 || !labels.every((label) => LABEL.test(label))) {
     return null;
   }
-  if (/^\d+$/.test(labels[labels.length - 1])) {
-    return null; // an IPv4 address
+  // A last label that is a number for the WHATWG URL parser (decimal, octal,
+  // hexadecimal) makes the whole host an IPv4 address (`0x7f.0x1` is
+  // 127.0.0.1): refused, as is anything the parser rewrites.
+  if (/^(0x[0-9a-f]*|\d+)$/i.test(labels[labels.length - 1])) {
+    return null;
+  }
+  let parsed;
+  try {
+    parsed = new URL(`https://${value}`).hostname;
+  } catch {
+    return null;
+  }
+  if (parsed !== value || isIP(parsed) !== 0) {
+    return null;
   }
   return `${value}${port}`;
 }

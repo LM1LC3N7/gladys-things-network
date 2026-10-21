@@ -72,18 +72,18 @@ sont ignorés (le bouton de test les liste).
 | ------------------- | -------------------------------------------------------------------------------------------------------------------- | ------------------------------------ |
 | Température         | `temperature`, `temp`, `TempC`, `TempC_SHT`, `TempC_DS`, `air_temperature`, `soil_temperature`, `water_temperature`… | °C (-50 à 125)                       |
 | Humidité            | `humidity`, `hum`, `Hum_SHT`, `relative_humidity`, `air_humidity`, `rh`                                              | %                                    |
-| Pression            | `pressure`, `barometric_pressure`, `barometer`, `air_pressure`                                                       | hPa (une valeur en Pa est convertie) |
+| Pression            | `barometric_pressure`, `barometer`, `air_pressure`, `baro` (300 à 1100 hPa) ; `pressure` seul : 850 à 1100 hPa       | hPa (une valeur en Pa est convertie) |
 | Luminosité          | `illuminance`, `luminosity`, `lux`, `light`, `light_intensity`, `ILL_lx`                                             | lux                                  |
 | CO2                 | `co2`, `co2_ppm`, `carbon_dioxide`                                                                                   | ppm                                  |
 | Particules          | `pm25`, `pm2_5`, `pm10`                                                                                              | µg/m³                                |
-| Batterie            | `battery_level`, `battery_percent`, `battery` ou `bat` (nombre entier seulement)                                     | %                                    |
+| Batterie            | `battery_level`, `battery_percent` ; `battery` ou `bat` : nombre entier de 6 à 100 seulement                         | %                                    |
 | Tension de batterie | `BatV`, `battery_voltage`, `vbat` ; en mV : `battery_mv`, `bat_mv`                                                   | V                                    |
 | Distance            | `distance_mm`, `distance_cm`, `distance_m` (une distance sans unité est ignorée)                                     | mm, cm, m                            |
 | Humidité du sol     | `soil_moisture`, `moisture`, `water_soil`, `vwc`                                                                     | %                                    |
 | Vent                | `wind_speed` (m/s), `wind_speed_kmh`                                                                                 | m/s, km/h                            |
 | UV                  | `uv`, `uv_index`                                                                                                     | indice UV                            |
-| Fuite d'eau         | `leak`, `water_leak`, `leakage` (vrai/faux ou 0/1)                                                                   | détectée ou non                      |
-| Mouvement           | `motion`, `occupancy`, `pir` (vrai/faux ou 0/1)                                                                      | détecté ou non                       |
+| Fuite d'eau         | `leak`, `water_leak`, `leakage` (vrai/faux ou un nombre entier : 1 et plus = détectée)                               | détectée ou non                      |
+| Mouvement           | `motion`, `occupancy`, `pir` (vrai/faux ou un nombre entier, par ex. un compte de détections : 1 et plus = détecté)  | détecté ou non                       |
 
 Les capteurs **SenseCAP** (Seeed) sont lus par leurs types (`Air
 Temperature`, `Air Humidity`, `Light Intensity`, `Barometric Pressure`, `UV
@@ -92,18 +92,37 @@ l'unité de ses champs avec `_sensor_attr`, comme dans Home Assistant :
 `{"_sensor_attr": {"distance": {"unit": "cm", "device_class": "distance"}}}`.
 
 Le type et l'unité d'un champ sont choisis à sa première lecture, puis ne
-changent plus. Une fonction déjà créée n'est jamais retirée de l'appareil.
+changent plus (après une perte de `/data`, c'est la fonction déjà créée qui
+décide). Une fonction déjà créée n'est jamais retirée de l'appareil.
+
+Un champ `battery` ou `bat` nu est ambigu : certains décodeurs y mettent une
+tension arrondie (3 pour 3 V) ou l'échelle LoRaWAN 0-254. Seul un nombre entier
+de 6 à 100 est lu comme un pourcentage ; préférez un décodeur qui nomme
+`battery_level` ou `BatV`.
 
 ## Fonctionnement
 
-- Chaque message est publié **une seule fois**, daté de sa réception par The
-  Things Stack (une valeur relue n'ajoute rien à l'historique). Au tout
-  premier démarrage, seuls les messages des 3 dernières heures sont publiés.
+- Chaque message est publié **une seule fois**, dans l'ordre de réception :
+  aucune valeur n'est perdue entre deux lectures (une fuite 0 → 1 → 0 arrive
+  bien dans Gladys).
+- **Scènes** : la valeur la plus récente de chaque fonction, reçue depuis la
+  lecture précédente (intervalle + 2 minutes), est publiée « en direct » :
+  Gladys déclenche alors les scènes, au moment de la lecture (donc jusqu'à un
+  intervalle après la mesure), et l'historique la date de sa lecture. Pour une
+  fuite d'eau ou un mouvement, chaque changement de cette période est publié
+  en direct, dans l'ordre. Les messages plus anciens (rattrapage après une
+  pause, un refus ou un arrêt) sont publiés datés de leur réception, du plus
+  ancien au plus récent : ils vont dans l'historique sans déclencher de scène.
+- Rattrapage borné : les messages des 6 dernières heures, au plus 48 par
+  fonction. Au tout premier démarrage, seulement ceux des 3 dernières heures.
 - Un appareil est identifié par son **DevEUI** (ou, sans DevEUI, par l'ID de
   l'application et celui de l'appareil) : un appareil supprimé puis recréé
   avec un autre DevEUI sous le même ID devient un nouvel appareil.
-- Au plus 100 appareils, 24 valeurs par appareil et 1000 messages par
-  lecture (au-delà, le statut conseille de réduire l'intervalle).
+- Au plus 100 appareils (un appareil muet depuis 30 jours et non créé dans
+  Gladys est oublié), 24 valeurs par appareil et 1000 messages par lecture.
+  Un message de plus de 256 Ko est ignoré (et compté dans le statut) ; une
+  réponse de plus de 8 Mo est lue jusqu'à cette limite (les plus récents
+  d'abord) : le statut le dit et conseille de réduire l'intervalle.
 - Gladys accepte 300 états par minute : les états partent par lots, dans ce
   budget ; le surplus attend la minute suivante.
 

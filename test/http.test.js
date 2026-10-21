@@ -48,20 +48,50 @@ test('lines split across chunks, multi-byte characters cut in two', async () => 
   }
 });
 
-test('a body or a line over its bound stops the read', async () => {
+test('I3: past the byte bound the read stops and keeps what came; a long line is skipped', async () => {
   const fetch = installFetch([
-    [/big/, () => chunked(Array.from({ length: 20 }, () => `${'x'.repeat(1000)}\n`))],
-    [/long/, () => chunked(Array.from({ length: 20 }, () => 'y'.repeat(1000)))],
+    [/big/, () => chunked(Array.from({ length: 20 }, (_, i) => `${String(i).padEnd(999, 'x')}\n`))],
+    [/long/, () => chunked(['a\n', 'y'.repeat(3000), 'y'.repeat(3000), '\nb\n', 'z'.repeat(6000)])],
   ]);
   try {
+    const big = [];
+    const answer = await getLines('https://example.org/big', {
+      onLine: (l) => big.push(l),
+      maxBytes: 5500,
+    });
+    assert.equal(answer.truncated, true);
+    assert.equal(big.length, 5, 'the five whole lines; the one cut in two is dropped');
+    const long = [];
+    const second = await getLines('https://example.org/long', {
+      onLine: (l) => long.push(l),
+      maxLine: 5000,
+    });
+    assert.deepEqual(long, ['a', 'b']);
+    assert.equal(second.skipped, 2);
+    assert.equal(second.truncated, false);
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('M2: an error status with a huge body keeps its status and Retry-After', async () => {
+  const fetch = installFetch([
+    [
+      /storage/,
+      () =>
+        new Response('<html>'.repeat(50_000), { status: 503, headers: { 'retry-after': '900' } }),
+    ],
+    [/refused/, () => new Response('x'.repeat(200_000), { status: 401 })],
+  ]);
+  try {
+    const answer = await getLines('https://example.org/storage', { onLine: () => {} });
+    assert.equal(answer.status, 503);
+    assert.equal(answer.retryAfterMs, 900_000);
     await assert.rejects(
-      getLines('https://example.org/big', { onLine: () => {}, maxBytes: 5000 }),
-      /answer too large on example\.org/,
+      readUplinks({ host: 'example.org', applicationId: APP, apiKey: API_KEY, lastMs: 1 }),
+      (err) => err.kind === 'busy' && err.retryAfterMs === 900_000,
     );
-    await assert.rejects(
-      getLines('https://example.org/long', { onLine: () => {}, maxLine: 5000 }),
-      /line too long/,
-    );
+    assert.equal((await getLines('https://example.org/refused', { onLine: () => {} })).status, 401);
   } finally {
     fetch.restore();
   }

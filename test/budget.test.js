@@ -58,17 +58,46 @@ test('two publications at the same moment share one budget', async () => {
   );
 });
 
-test('a newer value replaces the one waiting; an older never does; the queue is bounded', async () => {
+test('indexed by (feature, uplink time): two uplinks of a feature both wait, the same one once', async () => {
   const clock = createClock();
-  const budget = new StateBudget({ gladys: fakeGladys(), now: clock.now, maxPending: 5 });
+  const gladys = fakeGladys();
+  const budget = new StateBudget({ gladys, now: clock.now, maxPending: 5 });
   budget.enqueue([state(1, '2026-10-21T10:00:00.000Z')]);
   budget.enqueue([{ ...state(1, '2026-10-21T10:05:00.000Z'), state: 7 }]);
-  budget.enqueue([{ ...state(1, '2026-10-21T09:00:00.000Z'), state: 9 }]);
-  assert.equal(budget.pending.size, 1);
-  assert.equal([...budget.pending.values()][0].state, 7);
+  budget.enqueue([{ ...state(1, '2026-10-21T10:00:00.000Z'), state: 9 }]);
+  assert.equal(budget.pending.size, 2);
+  assert.deepEqual(
+    [...budget.pending.values()].map((s) => s.state),
+    [1, 7],
+  );
   budget.enqueue(Array.from({ length: 10 }, (_, i) => state(100 + i)));
   assert.equal(budget.pending.size, 5);
-  assert.equal(budget.dropped, 6);
+  assert.equal(budget.dropped, 7);
+  const sent = [];
+  gladys.publishStates = async (batch) => sent.push(...batch);
+  await budget.flush();
+  assert.ok(
+    sent.every((s) => !('_key' in s)),
+    'the queue key never reaches Gladys',
+  );
+});
+
+test('M1: a batch counts from the end of its request (the core minute starts at arrival)', async () => {
+  const clock = createClock();
+  const gladys = {
+    async publishStates() {
+      clock.advance(50);
+      return { success: true };
+    },
+  };
+  const budget = new StateBudget({ gladys, now: clock.now });
+  budget.enqueue(Array.from({ length: 300 }, (_, i) => state(i)));
+  await budget.flush();
+  budget.enqueue(Array.from({ length: 100 }, (_, i) => state(500 + i)));
+  clock.advance(60_000 - 150);
+  assert.equal(await budget.flush(), 0, 'the last batch arrived less than a minute ago');
+  clock.advance(51);
+  assert.equal(await budget.flush(), 100);
 });
 
 test('a failed batch goes back to the queue and still counts', async () => {

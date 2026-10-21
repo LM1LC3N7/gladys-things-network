@@ -125,5 +125,12 @@ export async function readUplinks({ host, applicationId, apiKey, after, lastMs, 
   if (streamError) {
     throw streamError;
   }
-  return { uplinks, truncated: uplinks.length >= max, lines };
+  // Newest first: what was read before a bound is the part that matters.
+  return {
+    uplinks,
+    truncated: uplinks.length >= max || answer.truncated,
+    tooLarge: answer.truncated,
+    skipped: answer.skipped,
+    lines,
+  };
 }

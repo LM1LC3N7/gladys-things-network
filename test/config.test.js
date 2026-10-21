@@ -41,6 +41,11 @@ test('a custom host: HTTPS host names only', () => {
   assert.equal(parseHost('user@lns.example.org'), null);
   assert.equal(parseHost('lns.example.org/path'), null);
   assert.equal(parseHost('lns.example.org:99999'), null);
+  // I2: IPv4 addresses the WHATWG parser reads in hexadecimal or octal.
+  for (const ip of ['0x7f.0x1', '127.0.0.0x1', '10.0.0.0x1', '0300.0250.0.0x1', '0x7f000001']) {
+    assert.equal(parseHost(ip), null, ip);
+  }
+  assert.equal(parseHost('lns.0x1.example.org'), 'lns.0x1.example.org');
   const config = normalizeConfig({
     server: 'custom',
     application_id: 'my-app',
