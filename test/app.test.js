@@ -436,12 +436,15 @@ test('a device created later gets its latest values at once, without a request',
     const { app, gladys } = await setup();
     await app.start(CONFIG);
     assert.equal(gladys.fake.states.length, 0);
-    gladys.onDeviceCreated(() => app.onDeviceCreated());
+    gladys.onDeviceCreated((device) => app.onDeviceCreated(device));
     await gladys.fake.deviceCreated(createdDevice());
     assert.equal(gladys.fake.states.length, 3);
     // Created again (deleted, then created): the latest values again, with
     // the same date (the core ignores a state it already has) (M7).
-    await app.onDeviceCreated();
+    await app.onDeviceCreated(createdDevice());
+    assert.equal(gladys.fake.states.length, 6);
+    // R2: another device created resends nothing of this one.
+    await app.onDeviceCreated({ external_id: `ext:${SELECTOR}:ttn:eui-0011223344556677` });
     assert.equal(gladys.fake.states.length, 6);
     assert.deepEqual(gladys.fake.states.slice(3), gladys.fake.states.slice(0, 3));
     assert.equal(gladys.fake.states[0].created_at, '2026-10-21T10:00:00.123Z');
@@ -547,10 +550,10 @@ test('B1+I1: catching up, each uplink once, oldest first; only the recent newest
     assert.deepEqual(
       gladys.fake.states.slice(1).map((s) => [s.state, s.created_at]),
       [
+        [30, undefined], // live first (review 2, R1), then the catch-up, oldest first
         [27, '2026-10-21T10:10:00.000Z'],
         [28, '2026-10-21T10:30:00.000Z'],
         [29, '2026-10-21T10:50:00.000Z'],
-        [30, undefined],
       ],
     );
   } finally {
@@ -719,6 +722,108 @@ test('M10: field names are cleaned of control characters in the test button text
     const answer = await app.testConnection();
     assert.match(answer.en, /ignored fields: oddname/);
     assert.ok(!answer.en.includes('\u0007'));
+  } finally {
+    fetch.restore();
+  }
+});
+
+// --- Review 2 ------------------------------------------------------------------------
+
+test('R1 (S16): a catch-up of 4 fields x 40 devices never drops a live leak', async () => {
+  const uplinks = [];
+  for (let d = 0; d < 40; d += 1) {
+    for (let i = 0; i < 25; i += 1) {
+      const at = new Date(Date.parse('2026-10-21T10:04:00Z') - i * 14 * 60_000).toISOString();
+      uplinks.push(
+        uplink({
+          deviceId: `dev-${String(d).padStart(2, '0')}`,
+          devEui: `00112233445566${String(d).padStart(2, '0')}`,
+          at,
+          payload: {
+            TempC_SHT: 20 + (i % 3),
+            Hum_SHT: 50,
+            BatV: 3.1,
+            water_leak: d === 0 && i === 0,
+          },
+        }),
+      );
+    }
+  }
+  const fetch = installFetch([[STORAGE, () => stream(uplinks)]]);
+  try {
+    const fields = [
+      { key: 'tempc_sht', kind: 'temperature', name: 'TempC_SHT' },
+      { key: 'hum_sht', kind: 'humidity', name: 'Hum_SHT' },
+      { key: 'batv', kind: 'battery_voltage', name: 'BatV' },
+      { key: 'water_leak', kind: 'leak', name: 'water_leak' },
+    ];
+    const gladys0 = createFakeGladys({ selector: SELECTOR });
+    const devices = Array.from({ length: 40 }, (_, d) => ({
+      ...deviceOf(gladys0, {
+        platformId: `eui-00112233445566${String(d).padStart(2, '0')}`,
+        name: `dev-${d}`,
+        fields,
+      }),
+      id: `d${d}`,
+    }));
+    const { app, gladys } = await setup({ devices });
+    app.budget.maxPending = 1000;
+    await app.start(CONFIG);
+    const pending = [...app.budget.pending.values(), ...gladys.fake.states];
+    const leak = `ext:${SELECTOR}:ttn:eui-0011223344556600:water_leak`;
+    assert.ok(
+      pending.some((s) => s.device_feature_external_id === leak && s.state === 1 && !s.created_at),
+      'the live leak of the first device is kept',
+    );
+    assert.equal(
+      app.budget.live.size + gladys.fake.states.filter((s) => !s.created_at).length,
+      160,
+    );
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('R3: the cursor and the devices are written right after a read', async () => {
+  const fetch = installFetch([[STORAGE, () => stream([uplink()])]]);
+  try {
+    const storage = memoryStorage();
+    const { app } = await setup({ storage, devices: [createdDevice()] });
+    await app.start(CONFIG);
+    const saved = storage.load();
+    assert.equal(saved.state.cursor, Date.parse('2026-10-21T10:00:00.123Z'));
+    assert.equal(
+      saved.devices['lht65-garden'].lastUplinkAt,
+      Date.parse('2026-10-21T10:00:00.123Z'),
+    );
+  } finally {
+    fetch.restore();
+  }
+});
+
+test('R4: a bare battery of 1-5 % is read once the field gave a level above 5 %', async () => {
+  let answer = [uplink({ payload: { battery: 3 } })];
+  const fetch = installFetch([[STORAGE, () => stream(answer)]]);
+  try {
+    const devices = [createdDevice([{ key: 'battery', kind: 'battery_whole', name: 'battery' }])];
+    const { app, gladys, clock, timers } = await setup({ devices });
+    await app.start(CONFIG);
+    assert.equal(gladys.fake.states.length, 0, '3 alone may be a voltage');
+    answer = [
+      uplink({ at: '2026-10-21T10:09:00Z', payload: { battery: 4 } }),
+      uplink({ at: '2026-10-21T10:07:00Z', payload: { battery: 40 } }),
+    ];
+    clock.advance(5 * 60_000);
+    await timers.runIntervals();
+    // The live 4 % first, then the dated 40 %.
+    assert.deepEqual(
+      gladys.fake.states.map((s) => [s.state, Boolean(s.created_at)]),
+      [
+        [4, false],
+        [40, true],
+      ],
+    );
+    assert.equal(app.store.device('lht65-garden').fields[0].kind, 'battery_whole_seen');
   } finally {
     fetch.restore();
   }

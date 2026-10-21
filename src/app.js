@@ -52,6 +52,9 @@ const numberText = (value, lang) =>
 /** An uplink further in the future than this is not believed. */
 const FUTURE_SLACK = 5 * 60_000;
 
+/** The margin past interval + LIVE_MARGIN before a waiting live state leaves dated. */
+const LIVE_SLACK = 60_000;
+
 export class TtnApp {
   constructor({
     gladys,
@@ -69,7 +72,14 @@ export class TtnApp {
     // The pace, pauses and refusals live as long as the process, across
     // reconnections to Gladys, and in /data across restarts of the container.
     this.store = new StateStore({ storage, now, maxPause: BUSY_MAX, maxRefusal: REFUSED_BACKOFF });
-    this.budget = new StateBudget({ gladys, now, logger });
+    // A live state that waited longer than this (a slow Gladys, a long
+    // catch-up) leaves dated: a scene never fires late on an old value.
+    this.budget = new StateBudget({
+      gladys,
+      now,
+      logger,
+      liveMaxAge: () => this.intervalMs() + LIVE_MARGIN + LIVE_SLACK,
+    });
     /** device id -> { pid, values: Map<key, { value, at, queued }>, ignored: Set } */
     this.track = new Map();
     this.error = undefined;
@@ -305,6 +315,9 @@ export class TtnApp {
       skipped: result.skipped,
     };
     this.apply(result.uplinks);
+    // The cursor and the last uplink of each device are written at once (one
+    // write per read): after a hard stop, an uplink is never sent live twice.
+    this.store.flush({ force: true });
     return true;
   }
 
@@ -435,6 +448,13 @@ export class TtnApp {
         next.fields.push({ key, kind, name: cleanName(field.raw, 60) || key });
         kinds.set(key, kind);
       }
+      if (kind === 'battery_whole' && points.some((p) => valueOf(kind, p.raw) !== null)) {
+        // A bare battery that gave a level above 5 % is a percentage: from
+        // now on, 0 to 5 % are read too (a nearly empty battery is shown).
+        kind = 'battery_whole_seen';
+        kinds.set(key, kind);
+        next.fields = next.fields.map((f) => (f.key === key ? { ...f, kind } : f));
+      }
       const values = points
         .map(({ raw, at }) => ({ value: valueOf(kind, raw), at }))
         .filter((p) => p.value !== null)
@@ -480,7 +500,7 @@ export class TtnApp {
         states.push({
           device_feature_external_id: id,
           state: value,
-          ...(live ? {} : { created_at: new Date(at).toISOString() }),
+          ...(live ? { _at: at } : { created_at: new Date(at).toISOString() }),
           _key: `${id}|${at}`,
         });
       }
@@ -489,12 +509,16 @@ export class TtnApp {
   }
 
   /**
-   * A device was (re)created in Gladys: the latest value of each of its
-   * features goes now, dated with its uplink (the core ignores a state it
-   * already has with the same date and value).
+   * A device was (re)created in Gladys: the latest value of each feature of
+   * THAT device goes now, dated with its uplink (the other devices are left
+   * alone: a value they already have would be stored twice).
    */
-  async onDeviceCreated() {
+  async onDeviceCreated(device) {
+    const externalId = device?.external_id;
     for (const entry of this.track.values()) {
+      if (idsOf(this.gladys, entry.pid).device !== externalId) {
+        continue;
+      }
       const items = [...entry.values].map(([key, v]) => ({ key, ...v, live: false }));
       this.budget.enqueue(this.statesOf(entry.pid, items));
     }

@@ -125,3 +125,53 @@ test('a failed batch goes back to the queue and still counts', async () => {
   assert.equal(await budget.flush(), 50);
   assert.equal(warnings.length, 1);
 });
+
+// --- Review 2 ------------------------------------------------------------------------
+
+test('R1: live states go first and are never dropped for the catch-up', async () => {
+  const clock = createClock();
+  const sent = [];
+  const gladys = { publishStates: async (batch) => sent.push(...batch) };
+  const budget = new StateBudget({ gladys, now: clock.now, maxPending: 5 });
+  const dated = (i) => ({ ...state(i), created_at: `2026-10-21T0${i % 9}:00:00.000Z` });
+  budget.enqueue(Array.from({ length: 8 }, (_, i) => dated(i)));
+  budget.enqueue([{ device_feature_external_id: 'leak', state: 1, _at: clock.now() }]);
+  assert.equal(budget.pending.size, 5);
+  assert.ok(budget.pending.has(`leak|${clock.now()}`), 'the live leak is kept');
+  await budget.flush();
+  assert.deepEqual(sent[0], { device_feature_external_id: 'leak', state: 1 });
+  assert.equal(sent.length, 5);
+});
+
+test('R1: a live state that waited too long leaves dated (no late scene)', async () => {
+  const clock = createClock();
+  let fail = true;
+  const sent = [];
+  const gladys = {
+    async publishStates(batch) {
+      if (fail) {
+        throw new Error('HTTP 503');
+      }
+      sent.push(...batch);
+    },
+  };
+  const budget = new StateBudget({ gladys, now: clock.now, liveMaxAge: () => 8 * 60_000 });
+  const at = clock.now();
+  budget.enqueue([{ device_feature_external_id: 'leak', state: 1, _at: at }]);
+  await budget.flush();
+  clock.advance(7 * 60_000);
+  fail = false;
+  await budget.flush();
+  assert.deepEqual(sent, [{ device_feature_external_id: 'leak', state: 1 }], 'still recent: live');
+  budget.enqueue([{ device_feature_external_id: 'leak', state: 0, _at: at + 1 }]);
+  fail = true;
+  await budget.flush();
+  clock.advance(20 * 60_000);
+  fail = false;
+  await budget.flush();
+  assert.deepEqual(sent[1], {
+    device_feature_external_id: 'leak',
+    state: 0,
+    created_at: new Date(at + 1).toISOString(),
+  });
+});

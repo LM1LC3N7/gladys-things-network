@@ -127,6 +127,18 @@ export const KINDS = {
       return n !== null && Number.isInteger(n) && n > 5 && n <= 100 ? n : null;
     },
   },
+  // The same field once it gave a level above 5 %: a percentage, 0 to 100.
+  battery_whole_seen: {
+    category: CAT.BATTERY,
+    type: TYPES.BATTERY.INTEGER,
+    unit: UNITS.PERCENT,
+    min: 0,
+    max: 100,
+    convert: (value) => {
+      const n = num(value);
+      return n !== null && Number.isInteger(n) && n >= 0 && n <= 100 ? n : null;
+    },
+  },
   battery_voltage: {
     ...decimal(CAT.ENERGY_SENSOR, UNITS.VOLT, 0, 60, 3),
     type: TYPES.ENERGY_SENSOR.VOLTAGE,

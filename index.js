@@ -21,7 +21,7 @@ const app = new TtnApp({ gladys, logger, storage: fileStorage(STATE_FILE, { logg
 gladys.onScanRequest(() => app.publishDiscovered({ force: true }));
 
 // --- A device was created: send its latest values now -------------------------
-gladys.onDeviceCreated(() => app.onDeviceCreated());
+gladys.onDeviceCreated((device) => app.onDeviceCreated(device));
 
 // --- Configuration screen button -----------------------------------------------
 gladys.onAction(ACTIONS.TEST, () => app.testConnection());

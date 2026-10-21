@@ -72,7 +72,7 @@ them).
 | Light           | `illuminance`, `luminosity`, `lux`, `light`, `light_intensity`, `ILL_lx`                                               | lux                              |
 | CO2             | `co2`, `co2_ppm`, `carbon_dioxide`                                                                                     | ppm                              |
 | Particles       | `pm25`, `pm2_5`, `pm10`                                                                                                | µg/m³                            |
-| Battery         | `battery_level`, `battery_percent`, `battery` or `bat`: whole numbers from 6 to 100 only                               | %                                |
+| Battery         | `battery_level`, `battery_percent`, `battery` or `bat`: whole numbers from 6 to 100 (then 0 to 100)                    | %                                |
 | Battery voltage | `BatV`, `battery_voltage`, `vbat`; in mV: `battery_mv`, `bat_mv`                                                       | V                                |
 | Distance        | `distance_mm`, `distance_cm`, `distance_m` (a distance without unit is ignored)                                        | mm, cm, m                        |
 | Soil moisture   | `soil_moisture`, `moisture`, `water_soil`, `vwc`                                                                       | %                                |
@@ -93,7 +93,8 @@ feature already created is never removed from its device.
 
 A bare `battery` or `bat` field is ambiguous: some decoders put a rounded
 voltage there (3 for 3 V) or the LoRaWAN 0-254 scale. Only a whole number from
-6 to 100 is read as a percentage; prefer a decoder that names
+6 to 100 is first read as a percentage; once it gave a value above 5 %, values
+from 0 to 5 % are read too (a nearly empty battery stays visible). Prefer a decoder that names
 `battery_level` or `BatV`.
 
 ## How it works

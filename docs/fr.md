@@ -76,7 +76,7 @@ sont ignorés (le bouton de test les liste).
 | Luminosité          | `illuminance`, `luminosity`, `lux`, `light`, `light_intensity`, `ILL_lx`                                             | lux                                  |
 | CO2                 | `co2`, `co2_ppm`, `carbon_dioxide`                                                                                   | ppm                                  |
 | Particules          | `pm25`, `pm2_5`, `pm10`                                                                                              | µg/m³                                |
-| Batterie            | `battery_level`, `battery_percent` ; `battery` ou `bat` : nombre entier de 6 à 100 seulement                         | %                                    |
+| Batterie            | `battery_level`, `battery_percent` ; `battery` ou `bat` : nombre entier de 6 à 100 (puis 0 à 100)                    | %                                    |
 | Tension de batterie | `BatV`, `battery_voltage`, `vbat` ; en mV : `battery_mv`, `bat_mv`                                                   | V                                    |
 | Distance            | `distance_mm`, `distance_cm`, `distance_m` (une distance sans unité est ignorée)                                     | mm, cm, m                            |
 | Humidité du sol     | `soil_moisture`, `moisture`, `water_soil`, `vwc`                                                                     | %                                    |
@@ -97,7 +97,9 @@ décide). Une fonction déjà créée n'est jamais retirée de l'appareil.
 
 Un champ `battery` ou `bat` nu est ambigu : certains décodeurs y mettent une
 tension arrondie (3 pour 3 V) ou l'échelle LoRaWAN 0-254. Seul un nombre entier
-de 6 à 100 est lu comme un pourcentage ; préférez un décodeur qui nomme
+de 6 à 100 est d'abord lu comme un pourcentage ; une fois qu'il a donné une
+valeur au-dessus de 5 %, les valeurs de 0 à 5 % sont lues aussi (une pile
+presque vide reste visible). Préférez un décodeur qui nomme
 `battery_level` ou `BatV`.
 
 ## Fonctionnement
