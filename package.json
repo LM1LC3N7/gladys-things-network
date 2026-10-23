@@ -1,6 +1,6 @@
 {
   "name": "gladys-things-network",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "The Things Network / The Things Stack for Gladys Assistant: the last decoded values of the LoRaWAN devices of an application, read through the official Storage API.",
   "type": "module",
